@@ -70,6 +70,8 @@ pub struct NowPlayingConfig {
     pub display_format: DisplayFormat,
     /// Top margin in pixels to shift the text vertically within the applet (-10..=20).
     pub top_margin: i32,
+    /// The specific MPRIS bus name the user has chosen to control, if any.
+    pub selected_player: Option<String>,
 }
 
 impl Default for NowPlayingConfig {
@@ -79,6 +81,7 @@ impl Default for NowPlayingConfig {
             scroll_speed: ScrollSpeed::default(),
             display_format: DisplayFormat::default(),
             top_margin: 0,
+            selected_player: None,
         }
     }
 }

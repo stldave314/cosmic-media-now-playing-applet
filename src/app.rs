@@ -21,6 +21,19 @@ const SCROLL_GAP: &str = "    ·    ";
 /// Approximate character width in pixels for estimating overflow.
 const APPROX_CHAR_WIDTH: f32 = 8.0;
 
+/// Defines which view the popup should currently display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopupState {
+    MediaView,
+    SettingsView,
+}
+
+impl Default for PopupState {
+    fn default() -> Self {
+        Self::MediaView
+    }
+}
+
 /// Application model for the Now Playing panel applet.
 pub struct NowPlaying {
     /// Application state managed by the COSMIC runtime.
@@ -39,6 +52,34 @@ pub struct NowPlaying {
     scroll_offset: usize,
     /// Whether any media player is currently active.
     has_player: bool,
+    /// Currently active popup view.
+    popup_state: PopupState,
+    /// Current track album art URL from MPRIS.
+    art_url: Option<String>,
+    /// Loaded album art image for the popup.
+    art_image: Option<cosmic::iced::widget::image::Handle>,
+    /// List of currently active media players.
+    players: Vec<mpris::PlayerInfo>,
+    /// Playback status of the selected player.
+    playback_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlayerOption {
+    identity: String,
+    bus_name: String,
+}
+
+impl std::fmt::Display for PlayerOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.identity)
+    }
+}
+
+impl AsRef<str> for PlayerOption {
+    fn as_ref(&self) -> &str {
+        &self.identity
+    }
 }
 
 impl Default for NowPlaying {
@@ -52,6 +93,11 @@ impl Default for NowPlaying {
             display_text: String::new(),
             scroll_offset: 0,
             has_player: false,
+            popup_state: PopupState::default(),
+            art_url: None,
+            art_image: None,
+            players: Vec::new(),
+            playback_status: "Stopped".to_string(),
         }
     }
 }
@@ -107,6 +153,194 @@ impl NowPlaying {
             }
         }
     }
+
+    /// The Media controls view with album art.
+    fn view_media(&self) -> Element<'_, Message> {
+        let art: Element<'_, Message> = if let Some(handle) = &self.art_image {
+            widget::image::viewer(handle.clone()).into()
+        } else {
+            widget::icon::from_name("audio-x-generic-symbolic").size(128).into()
+        };
+
+        let art_container = widget::container(art)
+            .width(Length::Fixed(150.0))
+            .height(Length::Fixed(150.0))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill);
+
+        let title = widget::text::title3(if self.track_title.is_empty() {
+            fl!("no-media")
+        } else {
+            self.track_title.clone()
+        });
+
+        let artist = widget::text::body(self.track_artist.clone());
+
+        let btn_prev = widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
+            .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous));
+        
+        let play_pause_icon = if self.playback_status == "Playing" {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        };
+        let btn_play_pause = widget::button::icon(widget::icon::from_name(play_pause_icon))
+            .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause));
+            
+        let btn_next = widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
+            .on_press(Message::PlayerCommand(mpris::MprisCommand::Next));
+
+        let controls = widget::row::with_capacity(3)
+            .spacing(12)
+            .push(btn_prev)
+            .push(btn_play_pause)
+            .push(btn_next)
+            .align_y(Vertical::Center);
+
+        let settings_btn = widget::button::icon(widget::icon::from_name("emblem-system-symbolic"))
+            .on_press(Message::SwitchPopupView(PopupState::SettingsView));
+
+        let header = if self.players.is_empty() {
+            widget::row::with_capacity(2)
+                .push(widget::space::horizontal().width(Length::Fill))
+                .push(settings_btn)
+                .align_y(Vertical::Center)
+        } else {
+            let options: Vec<PlayerOption> = self.players.iter().map(|p| PlayerOption { identity: p.identity.clone(), bus_name: p.bus_name.clone() }).collect();
+            let selected_idx = options.iter().position(|o| Some(&o.bus_name) == self.config.selected_player.as_ref());
+            let picker = widget::dropdown(options.clone(), selected_idx, move |index| {
+                Message::SelectPlayer(options[index].bus_name.clone())
+            });
+            
+            widget::row::with_capacity(3)
+                .push(picker)
+                .push(widget::space::horizontal().width(Length::Fill))
+                .push(settings_btn)
+                .align_y(Vertical::Center)
+        };
+
+        let content = widget::column::with_capacity(5)
+            .spacing(16)
+            .padding(16)
+            .align_x(cosmic::iced::alignment::Horizontal::Center)
+            .push(header)
+            .push(art_container)
+            .push(title)
+            .push(artist)
+            .push(controls);
+
+        self.core.applet.popup_container(content).into()
+    }
+
+    /// The configuration popup window: width slider, scroll speed, display format, margin.
+    fn view_settings(&self) -> Element<'_, Message> {
+        let back_btn = widget::button::standard("Back")
+            .on_press(Message::SwitchPopupView(PopupState::MediaView));
+
+        let width_label = widget::text::body(format!(
+            "{}: {}px",
+            fl!("widget-width"),
+            self.config.widget_width
+        ));
+        let width_slider =
+            widget::slider(100.0..=500.0, self.config.widget_width as f32, Message::SetWidth)
+                .step(10.0);
+
+        let speed_label = widget::text::body(fl!("scroll-speed"));
+        let speed_row = widget::row::with_capacity(3)
+            .spacing(4)
+            .push(
+                widget::button::standard(fl!("speed-slow"))
+                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Slow))
+                    .class(if self.config.scroll_speed == ScrollSpeed::Slow {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    }),
+            )
+            .push(
+                widget::button::standard(fl!("speed-medium"))
+                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Medium))
+                    .class(if self.config.scroll_speed == ScrollSpeed::Medium {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    }),
+            )
+            .push(
+                widget::button::standard(fl!("speed-fast"))
+                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Fast))
+                    .class(if self.config.scroll_speed == ScrollSpeed::Fast {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    }),
+            );
+
+        let format_label = widget::text::body(fl!("display-format"));
+        let format_col = widget::column::with_capacity(3)
+            .spacing(4)
+            .push(
+                widget::button::standard(fl!("format-title-only"))
+                    .on_press(Message::SetDisplayFormat(DisplayFormat::TitleOnly))
+                    .class(if self.config.display_format == DisplayFormat::TitleOnly {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    })
+                    .width(Length::Fill),
+            )
+            .push(
+                widget::button::standard(fl!("format-artist-title"))
+                    .on_press(Message::SetDisplayFormat(DisplayFormat::ArtistTitle))
+                    .class(if self.config.display_format == DisplayFormat::ArtistTitle {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    })
+                    .width(Length::Fill),
+            )
+            .push(
+                widget::button::standard(fl!("format-title-artist"))
+                    .on_press(Message::SetDisplayFormat(DisplayFormat::TitleArtist))
+                    .class(if self.config.display_format == DisplayFormat::TitleArtist {
+                        cosmic::theme::Button::Suggested
+                    } else {
+                        cosmic::theme::Button::Standard
+                    })
+                    .width(Length::Fill),
+            );
+
+        let margin_label = widget::text::body(format!(
+            "{}: {}px",
+            fl!("top-margin"),
+            self.config.top_margin
+        ));
+        let margin_slider =
+            widget::slider(-10.0..=20.0, self.config.top_margin as f32, Message::SetTopMargin)
+                .step(1.0);
+
+        let content = widget::column::with_capacity(9)
+            .spacing(12)
+            .padding(16)
+            .push(
+                widget::row::with_capacity(2)
+                    .spacing(12)
+                    .push(back_btn)
+                    .push(widget::text::title4(fl!("app-title")))
+                    .align_y(Vertical::Center)
+            )
+            .push(width_label)
+            .push(width_slider)
+            .push(margin_label)
+            .push(margin_slider)
+            .push(speed_label)
+            .push(speed_row)
+            .push(format_label)
+            .push(format_col);
+
+        self.core.applet.popup_container(content).into()
+    }
 }
 
 /// Messages emitted by the application and its widgets.
@@ -117,11 +351,17 @@ pub enum Message {
     /// A popup window was closed.
     PopupClosed(Id),
     /// MPRIS metadata was updated from the background poller.
-    MprisUpdate {
-        title: String,
-        artist: String,
-        has_player: bool,
-    },
+    MprisUpdate(Vec<mpris::PlayerInfo>),
+    /// User selected a different media player from the dropdown.
+    SelectPlayer(String),
+    /// Switch between popup views.
+    SwitchPopupView(PopupState),
+    /// Fetch album art asynchronously.
+    FetchAlbumArt(String),
+    /// Album art fetch completed.
+    AlbumArtLoaded(Option<cosmic::iced::widget::image::Handle>),
+    /// Send a command to the MPRIS player.
+    PlayerCommand(crate::mpris::MprisCommand),
     /// Scroll timer tick — advance the marquee offset.
     ScrollTick,
     /// User changed the widget width via the slider.
@@ -140,20 +380,8 @@ pub enum Message {
 fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = Message> {
     cosmic::iced::stream::channel(4, async |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
         loop {
-            let msg = match mpris::get_active_track().await {
-                Some(meta) => Message::MprisUpdate {
-                    title: meta.title,
-                    artist: meta.artist,
-                    has_player: true,
-                },
-                None => Message::MprisUpdate {
-                    title: String::new(),
-                    artist: String::new(),
-                    has_player: false,
-                },
-            };
-
-            _ = channel.send(msg).await;
+            let players = mpris::get_all_players().await;
+            _ = channel.send(Message::MprisUpdate(players)).await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     })
@@ -260,105 +488,12 @@ impl cosmic::Application for NowPlaying {
             .into()
     }
 
-    /// The configuration popup window: width slider, scroll speed, display format.
+    /// The popup window containing either media controls or configuration settings.
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
-        let width_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("widget-width"),
-            self.config.widget_width
-        ));
-        let width_slider =
-            widget::slider(100.0..=500.0, self.config.widget_width as f32, Message::SetWidth)
-                .step(10.0);
-
-        let speed_label = widget::text::body(fl!("scroll-speed"));
-        let speed_row = widget::row::with_capacity(3)
-            .spacing(4)
-            .push(
-                widget::button::standard(fl!("speed-slow"))
-                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Slow))
-                    .class(if self.config.scroll_speed == ScrollSpeed::Slow {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    }),
-            )
-            .push(
-                widget::button::standard(fl!("speed-medium"))
-                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Medium))
-                    .class(if self.config.scroll_speed == ScrollSpeed::Medium {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    }),
-            )
-            .push(
-                widget::button::standard(fl!("speed-fast"))
-                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Fast))
-                    .class(if self.config.scroll_speed == ScrollSpeed::Fast {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    }),
-            );
-
-        let format_label = widget::text::body(fl!("display-format"));
-        let format_col = widget::column::with_capacity(3)
-            .spacing(4)
-            .push(
-                widget::button::standard(fl!("format-title-only"))
-                    .on_press(Message::SetDisplayFormat(DisplayFormat::TitleOnly))
-                    .class(if self.config.display_format == DisplayFormat::TitleOnly {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    })
-                    .width(Length::Fill),
-            )
-            .push(
-                widget::button::standard(fl!("format-artist-title"))
-                    .on_press(Message::SetDisplayFormat(DisplayFormat::ArtistTitle))
-                    .class(if self.config.display_format == DisplayFormat::ArtistTitle {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    })
-                    .width(Length::Fill),
-            )
-            .push(
-                widget::button::standard(fl!("format-title-artist"))
-                    .on_press(Message::SetDisplayFormat(DisplayFormat::TitleArtist))
-                    .class(if self.config.display_format == DisplayFormat::TitleArtist {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    })
-                    .width(Length::Fill),
-            );
-
-        let margin_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("top-margin"),
-            self.config.top_margin
-        ));
-        let margin_slider =
-            widget::slider(-10.0..=20.0, self.config.top_margin as f32, Message::SetTopMargin)
-                .step(1.0);
-
-        let content = widget::column::with_capacity(8)
-            .spacing(12)
-            .padding(16)
-            .push(widget::text::title4(fl!("app-title")))
-            .push(width_label)
-            .push(width_slider)
-            .push(margin_label)
-            .push(margin_slider)
-            .push(speed_label)
-            .push(speed_row)
-            .push(format_label)
-            .push(format_col);
-
-        self.core.applet.popup_container(content).into()
+        match self.popup_state {
+            PopupState::MediaView => self.view_media(),
+            PopupState::SettingsView => self.view_settings(),
+        }
     }
 
     /// Subscriptions: MPRIS poller, scroll timer, config watcher.
@@ -408,19 +543,68 @@ impl cosmic::Application for NowPlaying {
                     self.popup = None;
                 }
             }
-            Message::MprisUpdate {
-                title,
-                artist,
-                has_player,
-            } => {
+            Message::MprisUpdate(players) => {
+                self.players = players.clone();
+                let selected_bus = self.config.selected_player.as_ref();
+                let active_player = if let Some(bus) = selected_bus {
+                    players.into_iter().find(|p| &p.bus_name == bus)
+                } else {
+                    players.into_iter().next()
+                };
+
+                let (title, artist, art_url, status, has_player) = if let Some(p) = active_player {
+                    (p.metadata.title, p.metadata.artist, p.metadata.art_url, p.playback_status, true)
+                } else {
+                    (String::new(), String::new(), None, "Stopped".to_string(), false)
+                };
+
                 let changed = self.track_title != title
                     || self.track_artist != artist
                     || self.has_player != has_player;
+                
+                let art_changed = self.art_url != art_url;
+                
+                self.playback_status = status;
+                
                 if changed {
                     self.track_title = title;
                     self.track_artist = artist;
                     self.has_player = has_player;
                     self.rebuild_display_text();
+                }
+                
+                if art_changed {
+                    self.art_url = art_url.clone();
+                    self.art_image = None; // clear old image
+                    if let Some(url) = art_url {
+                        return Task::done(cosmic::Action::App(Message::FetchAlbumArt(url)));
+                    }
+                }
+            }
+            Message::SelectPlayer(bus_name) => {
+                self.config.selected_player = Some(bus_name);
+                self.save_config();
+                
+                let selected_bus = self.config.selected_player.as_ref().unwrap().clone();
+                if let Some(p) = self.players.iter().find(|p| p.bus_name == selected_bus).cloned() {
+                    let changed = self.track_title != p.metadata.title || self.track_artist != p.metadata.artist;
+                    let art_changed = self.art_url != p.metadata.art_url;
+                    
+                    self.playback_status = p.playback_status.clone();
+                    
+                    if changed || !self.has_player {
+                        self.track_title = p.metadata.title;
+                        self.track_artist = p.metadata.artist;
+                        self.has_player = true;
+                        self.rebuild_display_text();
+                    }
+                    if art_changed {
+                        self.art_url = p.metadata.art_url;
+                        self.art_image = None;
+                        if let Some(url) = self.art_url.clone() {
+                            return Task::done(cosmic::Action::App(Message::FetchAlbumArt(url)));
+                        }
+                    }
                 }
             }
             Message::ScrollTick => {
@@ -446,6 +630,21 @@ impl cosmic::Application for NowPlaying {
                 self.config.top_margin = m as i32;
                 self.save_config();
             }
+            Message::SwitchPopupView(state) => {
+                self.popup_state = state;
+            }
+            Message::FetchAlbumArt(url) => {
+                return Task::perform(fetch_album_art(url), |h| cosmic::Action::App(h));
+            }
+            Message::AlbumArtLoaded(handle) => {
+                self.art_image = handle;
+            }
+            Message::PlayerCommand(cmd) => {
+                let target_bus = self.config.selected_player.clone().or_else(|| self.players.first().map(|p| p.bus_name.clone()));
+                if let Some(bus) = target_bus {
+                    return Task::perform(crate::mpris::send_command(bus, cmd), |_| cosmic::Action::App(Message::ScrollTick));
+                }
+            }
             Message::ConfigChanged(config) => {
                 if self.config != config {
                     self.config = config;
@@ -459,4 +658,24 @@ impl cosmic::Application for NowPlaying {
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
+}
+
+/// Helper: Fetches album art from a local file path or remote HTTP URL.
+async fn fetch_album_art(url: String) -> Message {
+    if url.starts_with("file://") {
+        if let Ok(parsed) = reqwest::Url::parse(&url) {
+            if let Ok(path) = parsed.to_file_path() {
+                if let Ok(bytes) = tokio::fs::read(path).await {
+                    return Message::AlbumArtLoaded(Some(cosmic::iced::widget::image::Handle::from_bytes(bytes)));
+                }
+            }
+        }
+    } else if url.starts_with("http") {
+        if let Ok(resp) = reqwest::get(&url).await {
+            if let Ok(bytes) = resp.bytes().await {
+                return Message::AlbumArtLoaded(Some(cosmic::iced::widget::image::Handle::from_bytes(bytes.to_vec())));
+            }
+        }
+    }
+    Message::AlbumArtLoaded(None)
 }

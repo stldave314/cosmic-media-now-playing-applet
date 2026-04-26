@@ -13,6 +13,7 @@ rust-embed = "8"
 tokio = { version = "1", features = ["full"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }
+reqwest = "0.13.2"
 
 [dependencies.i18n-embed]
 version = "0.16"
