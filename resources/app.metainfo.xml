@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.cosmic_media_now_playing_applet</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0</project_license>
+  <name>Now Playing</name>
+  <summary>A COSMIC panel applet that displays the currently playing media track</summary>
+  <description>
+    <p>
+      Shows the currently playing media track name on your COSMIC desktop panel using
+      MPRIS. Supports configurable widget width, scrolling for long titles, and multiple
+      display formats.
+    </p>
+  </description>
+  <categories>
+    <category>System</category>
+  </categories>
+  <url type="homepage">https://github.com/user/cosmic-media-now-playing-applet</url>
+  <provides>
+    <binary>cosmic-media-now-playing-applet</binary>
+  </provides>
+</component>

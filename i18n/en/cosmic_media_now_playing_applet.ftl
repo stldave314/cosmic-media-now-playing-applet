@@ -1,0 +1,12 @@
+no-media = No media playing
+widget-width = Widget Width
+scroll-speed = Scroll Speed
+display-format = Display Format
+speed-slow = Slow
+speed-medium = Medium
+speed-fast = Fast
+format-title-only = Title Only
+format-artist-title = Artist — Title
+format-title-artist = Title — Artist
+app-title = Now Playing
+top-margin = Top Margin

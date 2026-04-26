@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Now Playing
+Comment=Shows the currently playing media track on the panel
+Type=Application
+Exec=cosmic-media-now-playing-applet
+Icon=com.github.cosmic_media_now_playing_applet-symbolic
+Terminal=false
+Categories=COSMIC;
+Keywords=COSMIC;Applet;media;music;mpris;now playing;
+NoDisplay=true
+X-CosmicApplet=true
+X-HostWaylandDisplay=true
+X-CosmicHoverPopup=Auto
