@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <img src="resources/screenshot.png" alt="Cosmic Media Now Playing Applet Screenshot" width="800">
+</p>
+
+<p align="center">
   <a href="#features">Features</a> •
   <a href="#installation">Installation</a> •
   <a href="#usage">Usage</a> •
