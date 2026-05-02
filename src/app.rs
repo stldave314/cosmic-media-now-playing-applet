@@ -62,6 +62,11 @@ pub struct NowPlaying {
     players: Vec<mpris::PlayerInfo>,
     /// Playback status of the selected player.
     playback_status: String,
+    /// Bus name of the player currently shown in the UI (may differ from config.selected_player).
+    active_player_bus: Option<String>,
+    /// Bus names of players that were Playing in the last MPRIS poll. Used to
+    /// detect when a player newly transitions to Playing so we can auto-switch.
+    last_playing_buses: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +103,8 @@ impl Default for NowPlaying {
             art_image: None,
             players: Vec::new(),
             playback_status: "Stopped".to_string(),
+            active_player_bus: None,
+            last_playing_buses: Vec::new(),
         }
     }
 }
@@ -207,7 +214,10 @@ impl NowPlaying {
                 .align_y(Vertical::Center)
         } else {
             let options: Vec<PlayerOption> = self.players.iter().map(|p| PlayerOption { identity: p.identity.clone(), bus_name: p.bus_name.clone() }).collect();
-            let selected_idx = options.iter().position(|o| Some(&o.bus_name) == self.config.selected_player.as_ref());
+            let selected_idx = options
+                .iter()
+                .position(|o| Some(&o.bus_name) == self.active_player_bus.as_ref())
+                .or(Some(0));
             let picker = widget::dropdown(options.clone(), selected_idx, move |index| {
                 Message::SelectPlayer(options[index].bus_name.clone())
             });
@@ -382,7 +392,7 @@ fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = 
         loop {
             let players = mpris::get_all_players().await;
             _ = channel.send(Message::MprisUpdate(players)).await;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     })
 }
@@ -446,15 +456,17 @@ impl cosmic::Application for NowPlaying {
     /// compositor, which is the mechanism that actually controls the applet's
     /// width on the panel bar.
     fn view(&self) -> Element<'_, Self::Message> {
-        if !self.has_player {
-            return widget::autosize::autosize(
-                widget::space::horizontal().width(Length::Fixed(0.0)),
-                AUTOSIZE_MAIN_ID.clone(),
-            )
-            .into();
-        }
-
+        let panel_height = self.core.applet.suggested_size(true).1
+            + 2 * self.core.applet.suggested_padding(true).1;
         let icon = widget::icon::from_name("audio-x-generic-symbolic").size(16);
+
+        if !self.has_player {
+            let button = widget::button::custom(icon)
+                .height(Length::Fixed(panel_height as f32))
+                .on_press_down(Message::TogglePopup)
+                .class(cosmic::theme::Button::AppletIcon);
+            return widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into();
+        }
 
         let text = widget::text::body(self.visible_text())
             .wrapping(cosmic::iced::widget::text::Wrapping::None);
@@ -469,14 +481,8 @@ impl cosmic::Application for NowPlaying {
             .spacing(6)
             .align_y(Vertical::Center);
 
-        // Apply the configurable top margin to shift text vertically.
         let content = widget::container(content)
             .padding([self.config.top_margin.max(0) as u16, 0, 0, 0]);
-
-        // Use the panel-height spacer to ensure the surface is tall enough,
-        // and set the total width to our configured widget_width.
-        let panel_height = self.core.applet.suggested_size(true).1
-            + 2 * self.core.applet.suggested_padding(true).1;
 
         let button = widget::button::custom(content)
             .width(Length::Fixed(self.config.widget_width as f32))
@@ -518,25 +524,27 @@ impl cosmic::Application for NowPlaying {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::TogglePopup => {
-                return if let Some(p) = self.popup.take() {
-                    destroy_popup(p)
-                } else {
-                    let new_id = Id::unique();
-                    self.popup.replace(new_id);
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(320.0)
-                        .min_width(280.0)
-                        .min_height(200.0)
-                        .max_height(500.0);
-                    get_popup(popup_settings)
+                if let Some(p) = self.popup.take() {
+                    return destroy_popup(p);
+                }
+                let Some(main_id) = self.core.main_window_id() else {
+                    return Task::none();
                 };
+                let new_id = Id::unique();
+                self.popup.replace(new_id);
+                let mut popup_settings = self.core.applet.get_popup_settings(
+                    main_id,
+                    new_id,
+                    None,
+                    None,
+                    None,
+                );
+                popup_settings.positioner.size_limits = Limits::NONE
+                    .max_width(320.0)
+                    .min_width(280.0)
+                    .min_height(200.0)
+                    .max_height(500.0);
+                return get_popup(popup_settings);
             }
             Message::PopupClosed(id) => {
                 if self.popup.as_ref() == Some(&id) {
@@ -544,45 +552,88 @@ impl cosmic::Application for NowPlaying {
                 }
             }
             Message::MprisUpdate(players) => {
-                self.players = players.clone();
-                let selected_bus = self.config.selected_player.as_ref();
-                let active_player = if let Some(bus) = selected_bus {
-                    players.into_iter().find(|p| &p.bus_name == bus)
+                // If the saved selection points to a player that no longer exists, clear it
+                // so it doesn't interfere with auto-selection going forward.
+                if let Some(ref bus) = self.config.selected_player.clone() {
+                    if !players.iter().any(|p| &p.bus_name == bus) {
+                        self.config.selected_player = None;
+                        self.save_config();
+                    }
+                }
+
+                // Auto-switch logic: prefer whichever player just transitioned to Playing.
+                // Otherwise stick with the current active player as long as it's still Playing.
+                // Otherwise pick any Playing player. If nothing is Playing, keep the current
+                // active player (or fall back to saved selection / first player).
+                let currently_playing: Vec<String> = players.iter()
+                    .filter(|p| p.playback_status == "Playing")
+                    .map(|p| p.bus_name.clone())
+                    .collect();
+
+                let newly_started = currently_playing.iter()
+                    .find(|bus| !self.last_playing_buses.contains(bus))
+                    .cloned();
+
+                let active_player = if let Some(new_bus) = newly_started {
+                    players.iter().find(|p| p.bus_name == new_bus).cloned()
+                } else if !currently_playing.is_empty() {
+                    self.active_player_bus.as_ref()
+                        .filter(|bus| currently_playing.contains(bus))
+                        .and_then(|bus| players.iter().find(|p| &p.bus_name == bus).cloned())
+                        .or_else(|| players.iter().find(|p| p.playback_status == "Playing").cloned())
                 } else {
-                    players.into_iter().next()
+                    self.active_player_bus.as_ref()
+                        .and_then(|bus| players.iter().find(|p| &p.bus_name == bus).cloned())
+                        .or_else(|| {
+                            self.config.selected_player.as_ref()
+                                .and_then(|bus| players.iter().find(|p| &p.bus_name == bus).cloned())
+                        })
+                        .or_else(|| players.first().cloned())
                 };
 
-                let (title, artist, art_url, status, has_player) = if let Some(p) = active_player {
-                    (p.metadata.title, p.metadata.artist, p.metadata.art_url, p.playback_status, true)
-                } else {
-                    (String::new(), String::new(), None, "Stopped".to_string(), false)
-                };
+                self.last_playing_buses = currently_playing;
+                self.players = players;
+
+                let (title, artist, art_url, art_bytes, status, has_player, active_bus) =
+                    if let Some(p) = active_player {
+                        let bus = p.bus_name.clone();
+                        (p.metadata.title, p.metadata.artist, p.metadata.art_url,
+                         p.metadata.art_bytes, p.playback_status, true, Some(bus))
+                    } else {
+                        (String::new(), String::new(), None, None, "Stopped".to_string(), false, None)
+                    };
 
                 let changed = self.track_title != title
                     || self.track_artist != artist
                     || self.has_player != has_player;
-                
+
                 let art_changed = self.art_url != art_url;
-                
+
                 self.playback_status = status;
-                
+                self.active_player_bus = active_bus;
+
                 if changed {
                     self.track_title = title;
                     self.track_artist = artist;
                     self.has_player = has_player;
                     self.rebuild_display_text();
                 }
-                
+
                 if art_changed {
                     self.art_url = art_url.clone();
-                    self.art_image = None; // clear old image
-                    if let Some(url) = art_url {
+                    self.art_image = None;
+                    if let Some(bytes) = art_bytes {
+                        // Bytes were read inline while the temp file still existed.
+                        self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
+                    } else if let Some(url) = art_url {
+                        // For http:// and data: URLs, fetch asynchronously.
                         return Task::done(cosmic::Action::App(Message::FetchAlbumArt(url)));
                     }
                 }
             }
             Message::SelectPlayer(bus_name) => {
-                self.config.selected_player = Some(bus_name);
+                self.config.selected_player = Some(bus_name.clone());
+                self.active_player_bus = Some(bus_name);
                 self.save_config();
                 
                 let selected_bus = self.config.selected_player.as_ref().unwrap().clone();
@@ -601,7 +652,9 @@ impl cosmic::Application for NowPlaying {
                     if art_changed {
                         self.art_url = p.metadata.art_url;
                         self.art_image = None;
-                        if let Some(url) = self.art_url.clone() {
+                        if let Some(bytes) = p.metadata.art_bytes {
+                            self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
+                        } else if let Some(url) = self.art_url.clone() {
                             return Task::done(cosmic::Action::App(Message::FetchAlbumArt(url)));
                         }
                     }
@@ -609,7 +662,9 @@ impl cosmic::Application for NowPlaying {
             }
             Message::ScrollTick => {
                 if self.needs_scroll() {
-                    self.scroll_offset += 1;
+                    let total_chars =
+                        self.display_text.chars().count() + SCROLL_GAP.chars().count();
+                    self.scroll_offset = (self.scroll_offset + 1) % total_chars;
                 }
             }
             Message::SetWidth(w) => {
@@ -640,7 +695,8 @@ impl cosmic::Application for NowPlaying {
                 self.art_image = handle;
             }
             Message::PlayerCommand(cmd) => {
-                let target_bus = self.config.selected_player.clone().or_else(|| self.players.first().map(|p| p.bus_name.clone()));
+                let target_bus = self.active_player_bus.clone()
+                    .or_else(|| self.players.first().map(|p| p.bus_name.clone()));
                 if let Some(bus) = target_bus {
                     return Task::perform(crate::mpris::send_command(bus, cmd), |_| cosmic::Action::App(Message::ScrollTick));
                 }
@@ -660,22 +716,79 @@ impl cosmic::Application for NowPlaying {
     }
 }
 
-/// Helper: Fetches album art from a local file path or remote HTTP URL.
+/// Helper: Fetches album art from a local file path, remote HTTP URL, or inline data URI.
+///
+/// Firefox (and Chromium) expose MPRIS artwork as data: URIs with base64-encoded image
+/// data rather than file:// or https:// URLs, so all three schemes must be handled.
 async fn fetch_album_art(url: String) -> Message {
+    Message::AlbumArtLoaded(fetch_art_bytes(&url).await.map(cosmic::iced::widget::image::Handle::from_bytes))
+}
+
+async fn fetch_art_bytes(url: &str) -> Option<Vec<u8>> {
     if url.starts_with("file://") {
-        if let Ok(parsed) = reqwest::Url::parse(&url) {
-            if let Ok(path) = parsed.to_file_path() {
-                if let Ok(bytes) = tokio::fs::read(path).await {
-                    return Message::AlbumArtLoaded(Some(cosmic::iced::widget::image::Handle::from_bytes(bytes)));
+        let path = url.strip_prefix("file://")?;
+        if let Ok(bytes) = tokio::fs::read(path).await {
+            return Some(bytes);
+        }
+        // Scan every /proc/<pid>/root/<path> to find the file inside any sandbox.
+        // This is a last-resort for when the inline read in get_all_players() missed it.
+        if let Ok(mut proc_entries) = tokio::fs::read_dir("/proc").await {
+            while let Ok(Some(entry)) = proc_entries.next_entry().await {
+                let pid_str = entry.file_name();
+                let pid_str = pid_str.to_string_lossy();
+                if !pid_str.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let proc_path = format!("/proc/{pid_str}/root{path}");
+                if let Ok(bytes) = tokio::fs::read(&proc_path).await {
+                    return Some(bytes);
                 }
             }
         }
-    } else if url.starts_with("http") {
-        if let Ok(resp) = reqwest::get(&url).await {
-            if let Ok(bytes) = resp.bytes().await {
-                return Message::AlbumArtLoaded(Some(cosmic::iced::widget::image::Handle::from_bytes(bytes.to_vec())));
+        let filename = std::path::Path::new(path).file_name()?.to_str()?;
+        for snap_name in [
+            "chromium", "chromium-browser", "firefox", "spotify",
+            "epiphany", "brave", "vivaldi", "opera",
+        ] {
+            let snap_path = format!("/tmp/snap-private-tmp/snap.{snap_name}/tmp/{filename}");
+            if let Ok(bytes) = tokio::fs::read(&snap_path).await {
+                return Some(bytes);
             }
         }
+        None
+    } else if url.starts_with("data:") {
+        // Format: data:[<mediatype>][;base64],<data>
+        let comma = url.find(',')?;
+        let header = &url["data:".len()..comma];
+        let data = &url[comma + 1..];
+        if header.ends_with(";base64") {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()
+        } else {
+            None
+        }
+    } else if url.starts_with("http") {
+        eprintln!("[art] http fetch: {url}");
+        let client = match reqwest::Client::builder()
+            .user_agent("cosmic-media-now-playing-applet/0.1")
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => { eprintln!("[art] client build error: {e}"); return None; }
+        };
+        let resp = match client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => { eprintln!("[art] http send error: {e}"); return None; }
+        };
+        let status = resp.status();
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => { eprintln!("[art] http body error: {e}"); return None; }
+        };
+        eprintln!("[art] http {status} → {} bytes", bytes.len());
+        Some(bytes.to_vec())
+    } else {
+        eprintln!("[art] unsupported url scheme: {url}");
+        None
     }
-    Message::AlbumArtLoaded(None)
 }
