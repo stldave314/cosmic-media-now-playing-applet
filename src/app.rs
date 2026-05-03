@@ -67,6 +67,10 @@ pub struct NowPlaying {
     /// Bus names of players that were Playing in the last MPRIS poll. Used to
     /// detect when a player newly transitions to Playing so we can auto-switch.
     last_playing_buses: Vec<String>,
+    /// Live slider value while the user is dragging. Committed to config only after settling.
+    slider_width: u32,
+    /// Monotonically-increasing counter used to debounce width commits.
+    width_settle_gen: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +109,8 @@ impl Default for NowPlaying {
             playback_status: "Stopped".to_string(),
             active_player_bus: None,
             last_playing_buses: Vec::new(),
+            slider_width: NowPlayingConfig::default().widget_width,
+            width_settle_gen: 0,
         }
     }
 }
@@ -250,10 +256,10 @@ impl NowPlaying {
         let width_label = widget::text::body(format!(
             "{}: {}px",
             fl!("widget-width"),
-            self.config.widget_width
+            self.slider_width
         ));
         let width_slider =
-            widget::slider(100.0..=500.0, self.config.widget_width as f32, Message::SetWidth)
+            widget::slider(100.0..=500.0, self.slider_width as f32, Message::SetWidth)
                 .step(10.0);
 
         let speed_label = widget::text::body(fl!("scroll-speed"));
@@ -374,8 +380,10 @@ pub enum Message {
     PlayerCommand(crate::mpris::MprisCommand),
     /// Scroll timer tick — advance the marquee offset.
     ScrollTick,
-    /// User changed the widget width via the slider.
+    /// User changed the widget width via the slider (live, while dragging).
     SetWidth(f32),
+    /// Fired after the width slider settles; commits the width to config.
+    WidthSettled(u64),
     /// User changed the scroll speed.
     SetScrollSpeed(ScrollSpeed),
     /// User changed the display format.
@@ -441,6 +449,7 @@ impl cosmic::Application for NowPlaying {
             config,
             ..Default::default()
         };
+        app.slider_width = app.config.widget_width;
         app.rebuild_display_text();
 
         (app, Task::none())
@@ -668,9 +677,23 @@ impl cosmic::Application for NowPlaying {
                 }
             }
             Message::SetWidth(w) => {
-                self.config.widget_width = w as u32;
-                self.save_config();
-                self.scroll_offset = 0;
+                self.slider_width = w as u32;
+                self.width_settle_gen += 1;
+                let gen = self.width_settle_gen;
+                return Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        gen
+                    },
+                    |gen| cosmic::Action::App(Message::WidthSettled(gen)),
+                );
+            }
+            Message::WidthSettled(gen) => {
+                if gen == self.width_settle_gen {
+                    self.config.widget_width = self.slider_width;
+                    self.save_config();
+                    self.scroll_offset = 0;
+                }
             }
             Message::SetScrollSpeed(speed) => {
                 self.config.scroll_speed = speed;
@@ -704,6 +727,7 @@ impl cosmic::Application for NowPlaying {
             Message::ConfigChanged(config) => {
                 if self.config != config {
                     self.config = config;
+                    self.slider_width = self.config.widget_width;
                     self.rebuild_display_text();
                 }
             }
