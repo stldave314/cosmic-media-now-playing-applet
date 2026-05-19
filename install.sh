@@ -95,6 +95,8 @@ do_install() {
 
     success "Installation complete!"
     echo ""
+    do_reload_panel
+    echo ""
     info "Add the applet to your COSMIC panel, or test with:"
     echo -e "        ${CYAN}cargo run --release${RESET}"
 }
@@ -130,6 +132,17 @@ do_uninstall() {
         success "Uninstall complete (${removed} files removed)."
     else
         warn "Nothing was installed — nothing to remove."
+    fi
+}
+
+# ── Reload panel ────────────────────────────────────────────────────────────
+do_reload_panel() {
+    if pgrep -x cosmic-panel &>/dev/null; then
+        step "Reloading COSMIC panel..."
+        pkill -x cosmic-panel || true
+        success "Panel restarted (cosmic-session will bring it back automatically)."
+    else
+        info "cosmic-panel is not running — skipping panel reload."
     fi
 }
 
