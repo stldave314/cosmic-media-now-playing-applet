@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::config::{DisplayFormat, NowPlayingConfig, ScrollSpeed};
+use crate::config::{DisplayFormat, NowPlayingConfig};
 use crate::fl;
 use crate::mpris;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -20,6 +20,10 @@ const SCROLL_GAP: &str = "    ·    ";
 
 /// Approximate character width in pixels for estimating overflow.
 const APPROX_CHAR_WIDTH: f32 = 8.0;
+
+/// Pixels consumed by the music-note icon and its spacing, subtracted from the
+/// available text area so short titles are not clipped by the container edge.
+const ICON_AREA_WIDTH: f32 = 22.0; // icon 16px + row spacing 6px
 
 /// Defines which view the popup should currently display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +136,7 @@ impl NowPlaying {
 
     /// Returns the visible portion of the display text for the marquee effect.
     fn visible_text(&self) -> String {
-        let max_chars = (self.config.widget_width as f32 / APPROX_CHAR_WIDTH) as usize;
+        let max_chars = ((self.config.widget_width as f32 - ICON_AREA_WIDTH) / APPROX_CHAR_WIDTH) as usize;
 
         if self.display_text.chars().count() <= max_chars {
             // Text fits — no scrolling needed.
@@ -149,7 +153,7 @@ impl NowPlaying {
 
     /// Whether the text overflows and needs scrolling.
     fn needs_scroll(&self) -> bool {
-        let max_chars = (self.config.widget_width as f32 / APPROX_CHAR_WIDTH) as usize;
+        let max_chars = ((self.config.widget_width as f32 - ICON_AREA_WIDTH) / APPROX_CHAR_WIDTH) as usize;
         self.display_text.chars().count() > max_chars
     }
 
@@ -262,70 +266,37 @@ impl NowPlaying {
             widget::slider(100.0..=500.0, self.slider_width as f32, Message::SetWidth)
                 .step(10.0);
 
-        let speed_label = widget::text::body(fl!("scroll-speed"));
-        let speed_row = widget::row::with_capacity(3)
-            .spacing(4)
-            .push(
-                widget::button::standard(fl!("speed-slow"))
-                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Slow))
-                    .class(if self.config.scroll_speed == ScrollSpeed::Slow {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    }),
-            )
-            .push(
-                widget::button::standard(fl!("speed-medium"))
-                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Medium))
-                    .class(if self.config.scroll_speed == ScrollSpeed::Medium {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    }),
-            )
-            .push(
-                widget::button::standard(fl!("speed-fast"))
-                    .on_press(Message::SetScrollSpeed(ScrollSpeed::Fast))
-                    .class(if self.config.scroll_speed == ScrollSpeed::Fast {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    }),
-            );
+        let speed_label = widget::text::body(format!(
+            "{}: {}/10",
+            fl!("scroll-speed"),
+            self.config.scroll_speed
+        ));
+        let speed_slider = widget::slider(
+            1.0..=10.0,
+            self.config.scroll_speed as f32,
+            |v| Message::SetScrollSpeed(v as u32),
+        ).step(1.0);
 
         let format_label = widget::text::body(fl!("display-format"));
-        let format_col = widget::column::with_capacity(3)
-            .spacing(4)
-            .push(
-                widget::button::standard(fl!("format-title-only"))
-                    .on_press(Message::SetDisplayFormat(DisplayFormat::TitleOnly))
-                    .class(if self.config.display_format == DisplayFormat::TitleOnly {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    })
-                    .width(Length::Fill),
-            )
-            .push(
-                widget::button::standard(fl!("format-artist-title"))
-                    .on_press(Message::SetDisplayFormat(DisplayFormat::ArtistTitle))
-                    .class(if self.config.display_format == DisplayFormat::ArtistTitle {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    })
-                    .width(Length::Fill),
-            )
-            .push(
-                widget::button::standard(fl!("format-title-artist"))
-                    .on_press(Message::SetDisplayFormat(DisplayFormat::TitleArtist))
-                    .class(if self.config.display_format == DisplayFormat::TitleArtist {
-                        cosmic::theme::Button::Suggested
-                    } else {
-                        cosmic::theme::Button::Standard
-                    })
-                    .width(Length::Fill),
-            );
+        let format_options: Vec<String> = vec![
+            fl!("format-title-only"),
+            fl!("format-artist-title"),
+            fl!("format-title-artist"),
+        ];
+        let format_selected = Some(match self.config.display_format {
+            DisplayFormat::TitleOnly => 0,
+            DisplayFormat::ArtistTitle => 1,
+            DisplayFormat::TitleArtist => 2,
+        });
+        let format_dropdown = widget::dropdown(
+            format_options,
+            format_selected,
+            |i| Message::SetDisplayFormat(match i {
+                0 => DisplayFormat::TitleOnly,
+                1 => DisplayFormat::ArtistTitle,
+                _ => DisplayFormat::TitleArtist,
+            }),
+        );
 
         let margin_label = widget::text::body(format!(
             "{}: {}px",
@@ -351,9 +322,9 @@ impl NowPlaying {
             .push(margin_label)
             .push(margin_slider)
             .push(speed_label)
-            .push(speed_row)
+            .push(speed_slider)
             .push(format_label)
-            .push(format_col);
+            .push(format_dropdown);
 
         self.core.applet.popup_container(content).into()
     }
@@ -384,8 +355,8 @@ pub enum Message {
     SetWidth(f32),
     /// Fired after the width slider settles; commits the width to config.
     WidthSettled(u64),
-    /// User changed the scroll speed.
-    SetScrollSpeed(ScrollSpeed),
+    /// User changed the scroll speed (1 = slowest, 10 = fastest).
+    SetScrollSpeed(u32),
     /// User changed the display format.
     SetDisplayFormat(DisplayFormat),
     /// User changed the top margin.
@@ -405,9 +376,10 @@ fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = 
     })
 }
 
-/// Helper: creates the scroll timer stream based on the scroll speed.
-fn scroll_timer_stream(speed: &ScrollSpeed) -> impl cosmic::iced::futures::Stream<Item = Message> {
-    let tick_ms = speed.tick_ms();
+/// Helper: creates the scroll timer stream based on the scroll speed level (1-10).
+fn scroll_timer_stream(speed: &u32) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    // level 1 = 300 ms/tick (slowest), level 10 = 30 ms/tick (fastest)
+    let tick_ms = (330u64).saturating_sub(*speed as u64 * 30).max(30);
     cosmic::iced::stream::channel(4, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
         let tick_duration = std::time::Duration::from_millis(tick_ms);
         loop {
@@ -467,16 +439,15 @@ impl cosmic::Application for NowPlaying {
     fn view(&self) -> Element<'_, Self::Message> {
         let panel_height = self.core.applet.suggested_size(true).1
             + 2 * self.core.applet.suggested_padding(true).1;
-        let icon = widget::icon::from_name("audio-x-generic-symbolic").size(16);
 
-        if !self.has_player {
-            let button = widget::button::custom(icon)
-                .height(Length::Fixed(panel_height as f32))
-                .on_press_down(Message::TogglePopup)
-                .class(cosmic::theme::Button::AppletIcon);
-            return widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into();
+        if !self.has_player || self.track_title.is_empty() {
+            return widget::autosize::autosize(
+                widget::Space::new().width(Length::Fixed(0.0)).height(Length::Fixed(0.0)),
+                AUTOSIZE_MAIN_ID.clone(),
+            ).into();
         }
 
+        let icon = widget::icon::from_name("audio-x-generic-symbolic").size(16);
         let text = widget::text::body(self.visible_text())
             .wrapping(cosmic::iced::widget::text::Wrapping::None);
 
@@ -549,10 +520,8 @@ impl cosmic::Application for NowPlaying {
                     None,
                 );
                 popup_settings.positioner.size_limits = Limits::NONE
-                    .max_width(320.0)
-                    .min_width(280.0)
-                    .min_height(200.0)
-                    .max_height(500.0);
+                    .min_height(100.0)
+                    .max_height(600.0);
                 return get_popup(popup_settings);
             }
             Message::PopupClosed(id) => {
@@ -695,8 +664,8 @@ impl cosmic::Application for NowPlaying {
                     self.scroll_offset = 0;
                 }
             }
-            Message::SetScrollSpeed(speed) => {
-                self.config.scroll_speed = speed;
+            Message::SetScrollSpeed(level) => {
+                self.config.scroll_speed = level.clamp(1, 10);
                 self.save_config();
             }
             Message::SetDisplayFormat(format) => {
