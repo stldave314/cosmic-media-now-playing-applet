@@ -174,14 +174,17 @@ impl NowPlaying {
     /// The Media controls view with album art.
     fn view_media(&self) -> Element<'_, Message> {
         let art: Element<'_, Message> = if let Some(handle) = &self.art_image {
-            widget::image::viewer(handle.clone()).into()
+            widget::Image::new(handle.clone())
+                .border_radius([16.0; 4])
+                .content_fit(cosmic::iced::ContentFit::Cover)
+                .width(Length::Fixed(150.0))
+                .height(Length::Fixed(150.0))
+                .into()
         } else {
             widget::icon::from_name("audio-x-generic-symbolic").size(128).into()
         };
 
         let art_container = widget::container(art)
-            .width(Length::Fixed(150.0))
-            .height(Length::Fixed(150.0))
             .center_x(Length::Fill)
             .center_y(Length::Fill);
 
