@@ -2,7 +2,7 @@
   <img src="resources/icon.svg" alt="Now Playing Applet Icon" width="96" height="96">
 </p>
 
-<h1 align="center">🎵 COSMIC Media Now Playing Applet</h1>
+<h1 align="center">COSMIC Media Now Playing Applet</h1>
 
 <p align="center">
   <strong>A panel applet for the <a href="https://github.com/pop-os/cosmic-epoch">COSMIC™ Desktop Environment</a> that displays the currently playing media track.</strong>
@@ -26,9 +26,11 @@
 
 ## Overview
 
-**cosmic-media-now-playing-applet** is a lightweight panel applet that integrates with any [MPRIS](https://specifications.freedesktop.org/mpris-spec/latest/)-compatible media player (Spotify, Firefox, VLC, Rhythmbox, Amberol, etc.) and displays the currently playing track directly on your COSMIC panel bar.
+**cosmic-media-now-playing-applet** is a lightweight panel applet that integrates with any [MPRIS](https://specifications.freedesktop.org/mpris-spec/latest/)-compatible media player (Spotify, Firefox, Chromium, VLC, Rhythmbox, Amberol, etc.) and displays the currently playing track directly on your COSMIC panel bar.
 
-When the track name is too long to fit in the widget, it scrolls gracefully in a marquee-style animation. All settings — width, scroll speed, and display format — are configurable through a popup that opens when you click the applet.
+The applet shows album art, playback controls, and the track title in a popup. When the track name is too long to fit in the panel widget, it scrolls smoothly in a marquee-style animation. All settings are configurable through the popup and persist across restarts.
+
+When no media is playing, the applet takes up no panel space at all.
 
 ---
 
@@ -37,12 +39,17 @@ When the track name is too long to fit in the widget, it scrolls gracefully in a
 | Feature | Description |
 |---------|-------------|
 | **🎵 Inline Panel Display** | Shows a music icon and track name directly on the COSMIC panel bar |
-| **📜 Marquee Scrolling** | Long track titles scroll smoothly with a configurable speed |
+| **🖼️ Album Art** | Displays rounded album art in the popup, fetched from any source |
+| **⏯️ Playback Controls** | Play/pause, previous, and next buttons in the popup |
+| **🎛️ Player Selector** | Dropdown to choose which player to control when multiple are active |
+| **🔄 Auto-Switching** | Automatically follows whichever player starts playing |
+| **📜 Marquee Scrolling** | Long track titles scroll smoothly with adjustable speed |
 | **📏 Configurable Width** | Adjust the widget width from 100px to 500px via a slider |
-| **🎨 Display Formats** | Choose between "Title Only", "Artist — Title", or "Title — Artist" |
-| **⚡ Scroll Speed** | Select Slow (80ms), Medium (50ms), or Fast (30ms) tick intervals |
+| **🎨 Display Formats** | Choose between Title Only, Artist — Title, or Title — Artist |
+| **👻 Invisible When Idle** | Takes up zero panel space when nothing is playing |
 | **💾 Persistent Settings** | Configuration survives restarts via COSMIC's `cosmic-config` system |
 | **🔌 Universal Compatibility** | Works with **any** MPRIS-compatible media player |
+| **📦 Sandbox-Aware** | Album art works across Flatpak, Snap, and native packages |
 | **🦀 Pure Rust** | No C library dependencies — uses `zbus` for native D-Bus communication |
 | **🌐 Internationalization** | Built-in i18n support with Fluent localization |
 
@@ -51,7 +58,7 @@ When the track name is too long to fit in the widget, it scrolls gracefully in a
 Any application that implements the [MPRIS D-Bus Interface](https://specifications.freedesktop.org/mpris-spec/latest/) will work, including but not limited to:
 
 - **Spotify** (desktop app)
-- **Firefox** / **Chromium** (web media)
+- **Firefox** / **Chromium** / **Chrome** / **Epiphany** (web media)
 - **VLC Media Player**
 - **Amberol**
 - **Rhythmbox**
@@ -63,23 +70,33 @@ Any application that implements the [MPRIS D-Bus Interface](https://specificatio
 - **Elisa**
 - **Any other MPRIS-compatible player**
 
+### Album Art Sources
+
+The applet fetches album art from whatever source the player provides:
+
+- **`file://` URLs** — read directly, or via `/proc/<pid>/root` to reach files inside Flatpak and Snap sandboxes
+- **`data:` URIs** — base64-encoded inline images (used by Firefox)
+- **`https://` URLs** — fetched over HTTP (used by Spotify, etc.)
+- **YouTube thumbnails** — automatically derived from the track URL when the player is a browser playing a YouTube video and the art file is otherwise inaccessible
+
 ---
 
 ## Installation
 
 ### Prerequisites
 
-You need a working Rust toolchain and a few system development libraries.
+You need a working Rust toolchain (installed via [rustup](https://rustup.rs)) and a few system development libraries.
+
+> **Note:** Use rustup rather than the system Rust package. rust-analyzer and other tooling work significantly better with the rustup-managed toolchain.
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
 
 #### Ubuntu / Pop!_OS / Debian
 
 ```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install system dependencies
 sudo apt install -y \
-    cargo \
     cmake \
     pkg-config \
     libexpat1-dev \
@@ -95,12 +112,7 @@ sudo apt install -y \
 #### Fedora
 
 ```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install system dependencies
 sudo dnf install -y \
-    cargo \
     cmake \
     pkg-config \
     expat-devel \
@@ -117,7 +129,6 @@ sudo dnf install -y \
 
 ```bash
 sudo pacman -S --needed \
-    rust \
     cmake \
     pkg-config \
     expat \
@@ -133,36 +144,23 @@ sudo pacman -S --needed \
 #### Using the install script (recommended)
 
 ```bash
-git clone https://github.com/user/cosmic-media-now-playing-applet.git
+git clone https://github.com/stldave314/cosmic-media-now-playing-applet.git
 cd cosmic-media-now-playing-applet
 
 # Build and install in one step
 ./install.sh build-install
 ```
 
-#### Using just (standard COSMIC method)
-
-```bash
-git clone https://github.com/user/cosmic-media-now-playing-applet.git
-cd cosmic-media-now-playing-applet
-
-# Build
-just build-release
-
-# Install (requires sudo)
-sudo just install
-```
+The install script automatically reloads the COSMIC panel after installing so changes take effect immediately.
 
 #### Using cargo directly
 
 ```bash
-git clone https://github.com/user/cosmic-media-now-playing-applet.git
+git clone https://github.com/stldave314/cosmic-media-now-playing-applet.git
 cd cosmic-media-now-playing-applet
 
-# Build
 cargo build --release
 
-# Install manually
 sudo install -Dm0755 target/release/cosmic-media-now-playing-applet /usr/bin/cosmic-media-now-playing-applet
 sudo install -Dm0644 resources/app.desktop /usr/share/applications/com.github.cosmic_media_now_playing_applet.desktop
 sudo install -Dm0644 resources/app.metainfo.xml /usr/share/appdata/com.github.cosmic_media_now_playing_applet.metainfo.xml
@@ -171,12 +169,10 @@ sudo install -Dm0644 resources/icon.svg /usr/share/icons/hicolor/scalable/apps/c
 
 ### Install Script Commands
 
-The included `install.sh` script provides several convenience commands:
-
 | Command | Description |
 |---------|-------------|
 | `./install.sh build` | Build the applet in release mode |
-| `./install.sh install` | Install to system (requires sudo) |
+| `./install.sh install` | Install to system (requires sudo) and reload the panel |
 | `./install.sh build-install` | Build and install in one step |
 | `./install.sh uninstall` | Remove from system (with optional config cleanup) |
 | `./install.sh reinstall` | Full uninstall → rebuild → reinstall cycle |
@@ -193,11 +189,7 @@ PREFIX=/usr/local ./install.sh build-install
 ### Uninstalling
 
 ```bash
-# Using install script
 ./install.sh uninstall
-
-# Or using just
-sudo just uninstall
 ```
 
 ---
@@ -215,37 +207,42 @@ After installing:
 
 ### Testing without installing
 
-You can run the applet in a standalone window for testing:
-
 ```bash
-# From the project directory
 cargo run --release
-
-# Or using just
-just run
 ```
 
-> **Note:** The applet is designed to run within the COSMIC panel. Running it standalone will open a test window, but some panel-specific features (like popup positioning) may behave differently.
+> **Note:** The applet is designed to run within the COSMIC panel. Running it standalone will open a test window, but popup positioning and panel sizing will behave differently than in production.
 
 ### What you'll see
 
-Once running and with media playing, the applet appears on your panel:
+When media is playing, the applet shows on the panel:
 
 ```
 ♫ Artist Name — Track Title
 ```
 
-- If no media is playing: **"No media playing"**
-- If the text is too long: it scrolls smoothly like a marquee
-- Click the applet to open the settings popup
+- **Nothing playing:** the applet is completely invisible and takes up no space
+- **Text too long:** it scrolls smoothly like a marquee
+- **Click the applet:** opens a popup with album art, track info, playback controls, and settings
 
 ---
 
 ## Configuration
 
-### Settings Popup
+### Media Popup
 
-Click the applet on the panel to open the configuration popup. All settings take effect immediately and are saved automatically.
+Click the applet on the panel to open the media popup. It shows:
+
+- **Player selector** — dropdown to choose which player to control when more than one is active
+- **Album art** — rounded art fetched from the player, falls back to a music note icon
+- **Track title and artist**
+- **Playback controls** — previous, play/pause, next
+
+Click the gear icon (⚙) to switch to the settings view.
+
+### Settings
+
+All settings take effect immediately and are saved automatically.
 
 #### Widget Width
 
@@ -253,21 +250,26 @@ Controls how much horizontal space the applet occupies on the panel.
 
 - **Range:** 100px — 500px
 - **Default:** 200px
-- **Adjustment:** Drag the slider
+- Changes are debounced — the panel resizes cleanly after you stop dragging
+
+#### Top Margin
+
+Shifts the panel text vertically to align with other applets if needed.
+
+- **Range:** -10px — 20px
+- **Default:** 0px
 
 #### Scroll Speed
 
-Controls how fast long text scrolls when it overflows the widget width.
+Controls how fast long text scrolls. Drag the slider left for slower, right for faster.
 
-| Speed | Tick Interval | Best For |
-|-------|:---:|---------|
-| **Slow** | 80ms | Relaxed reading |
-| **Medium** | 50ms | Balanced (default) |
-| **Fast** | 30ms | Quick glancing |
+- **Range:** 1 (slowest, ~300ms/step) — 10 (fastest, ~30ms/step)
+- **Default:** 5
+- Lower speeds are easier to read for longer titles
 
 #### Display Format
 
-Controls how track metadata is formatted.
+Dropdown to select how track metadata is formatted:
 
 | Format | Example Output |
 |--------|---------------|
@@ -275,17 +277,15 @@ Controls how track metadata is formatted.
 | **Artist — Title** | `Queen — Bohemian Rhapsody` (default) |
 | **Title — Artist** | `Bohemian Rhapsody — Queen` |
 
-> If the player only provides a title (no artist), all formats display the title alone.
+> If the player provides no artist, all formats display the title alone.
 
 ### Config File Location
 
-Settings are persisted via COSMIC's `cosmic-config` system at:
+Settings are stored via COSMIC's `cosmic-config` system at:
 
 ```
 ~/.config/cosmic/com.github.cosmic_media_now_playing_applet/v1/
 ```
-
-You generally don't need to edit these files directly — use the popup instead.
 
 ---
 
@@ -300,6 +300,7 @@ You generally don't need to edit these files directly — use the popup instead.
 | **Async Runtime** | [Tokio](https://tokio.rs/) |
 | **Config Persistence** | [cosmic-config](https://github.com/pop-os/libcosmic) |
 | **Localization** | [i18n-embed](https://crates.io/crates/i18n-embed) + [Fluent](https://projectfluent.org/) |
+| **HTTP (album art)** | [reqwest](https://crates.io/crates/reqwest) |
 
 ### How It Works
 
@@ -307,26 +308,25 @@ You generally don't need to edit these files directly — use the popup instead.
 ┌─────────────────────────────────────────────────────┐
 │                    COSMIC Panel                      │
 │                                                      │
-│   ┌──────────────────────────────────────────────┐   │
-│   │  ♫  Artist — Track Title  ←←← scrolling      │   │
-│   └──────────────┬───────────────────────────────┘   │
+│   ┌──────────────────────────────────────────────┐  │
+│   │  ♫  Artist — Track Title  ←←← scrolling      │  │
+│   └──────────────┬───────────────────────────────┘  │
 │                  │ click                             │
-│   ┌──────────────▼───────────────────────────────┐   │
-│   │         Settings Popup                        │   │
-│   │  ┌────────────────────────────────────────┐   │   │
-│   │  │  Widget Width: [═══════●═══] 200px     │   │   │
-│   │  │  Speed: [Slow] [●Medium] [Fast]        │   │   │
-│   │  │  Format: ● Artist — Title              │   │   │
-│   │  │          ○ Title — Artist               │   │   │
-│   │  │          ○ Title Only                   │   │   │
-│   │  └────────────────────────────────────────┘   │   │
-│   └──────────────────────────────────────────────┘   │
+│   ┌──────────────▼───────────────────────────────┐  │
+│   │  [Player Dropdown ▾]                    [⚙]  │  │
+│   │  ┌──────────────────────────────────────┐    │  │
+│   │  │         🖼 Album Art (rounded)        │    │  │
+│   │  └──────────────────────────────────────┘    │  │
+│   │           Track Title                         │  │
+│   │           Artist Name                         │  │
+│   │        [⏮]  [⏯]  [⏭]                        │  │
+│   └──────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────┘
 
      Background Subscriptions:
      ┌──────────────────────┐
-     │  MPRIS Poller (2s)   │──→ D-Bus session bus
-     │  Scroll Timer (~50ms)│──→ marquee animation
+     │  MPRIS Poller (1s)   │──→ D-Bus session bus
+     │  Scroll Timer        │──→ marquee animation
      │  Config Watcher      │──→ cosmic-config
      └──────────────────────┘
 ```
@@ -336,16 +336,16 @@ You generally don't need to edit these files directly — use the popup instead.
 ```
 cosmic-media-now-playing-applet/
 ├── Cargo.toml                # Dependencies & project metadata
-├── justfile                  # Build/install recipes (just)
-├── install.sh                # Standalone build/install script
+├── install.sh                # Build/install/uninstall script
 ├── i18n.toml                 # Localization configuration
 ├── i18n/
 │   └── en/
-│       └── cosmic_media_now_playing_applet.ftl   # English translations
+│       └── cosmic_media_now_playing_applet.ftl   # English strings
 ├── resources/
 │   ├── app.desktop           # Desktop entry for COSMIC panel
 │   ├── app.metainfo.xml      # AppStream metadata
-│   └── icon.svg              # Applet icon (music note)
+│   ├── icon.svg              # Applet icon
+│   └── screenshot.png        # README screenshot
 └── src/
     ├── main.rs               # Entry point — i18n init + applet launch
     ├── app.rs                # Application model, view, update, subscriptions
@@ -356,85 +356,58 @@ cosmic-media-now-playing-applet/
 
 ### Key Design Decisions
 
-**Pure-Rust D-Bus:** Instead of using the `mpris` crate (which wraps the C `libdbus` library), this applet uses [zbus](https://crates.io/crates/zbus) — a pure-Rust, async D-Bus implementation. This eliminates all C dependencies and makes cross-compilation trivial.
+**Pure-Rust D-Bus:** Uses [zbus](https://crates.io/crates/zbus) — a pure-Rust, async D-Bus implementation — instead of wrapping C libraries. This eliminates all C D-Bus dependencies.
 
-**Marquee Scrolling:** Implemented via character-offset windowing. The display text is duplicated with a separator (`    ·    `), and a `scroll_offset` advances on each timer tick. The timer subscription is completely disabled when the text fits within the widget, saving CPU cycles.
+**Sandbox-aware art loading:** Album art `file://` paths reported by MPRIS often point inside a sandboxed process's private filesystem. The applet resolves these by looking up the player's PID via D-Bus and reading through `/proc/<pid>/root/<path>`, which works uniformly for Flatpak, Snap, and any other Linux sandboxing technology. YouTube thumbnails are used as a fallback for browsers when the art file is otherwise unreachable.
 
-**Declarative Subscriptions:** Following the iced/COSMIC architecture, all background work (MPRIS polling, scroll animation, config watching) is handled through declarative `Subscription` streams that the runtime manages automatically.
+**Auto-switching:** The applet detects when a player transitions from paused to playing and automatically switches focus to it, making it natural to switch between multiple open players.
 
----
+**Debounced panel resizing:** Width slider changes are committed to the panel only after 1.5 seconds of inactivity, sending a single clean resize request rather than many rapid ones that could cause applets to overlap.
 
-## Building from Source
-
-### Debug Build
-
-```bash
-cargo build
-# Binary at: target/debug/cosmic-media-now-playing-applet
-```
-
-### Release Build
-
-```bash
-cargo build --release
-# Binary at: target/release/cosmic-media-now-playing-applet
-```
-
-### Linting
-
-```bash
-cargo clippy --all-features -- -W clippy::pedantic
-```
-
-### Vendored Build (offline)
-
-```bash
-# First, vendor dependencies
-just vendor
-
-# Then build offline
-just build-vendored
-```
+**Marquee Scrolling:** Implemented via character-offset windowing on a looping buffer. The scroll subscription is completely disabled when the text fits within the widget, saving CPU cycles.
 
 ---
 
 ## Troubleshooting
 
-### "No media playing" even though music is playing
+### Applet is not visible even though music is playing
 
-1. **Check MPRIS support:** Not all players support MPRIS. Verify with:
+The applet hides itself when no track title is available. Some players take a moment to populate MPRIS metadata after starting. If it never appears:
+
+1. **Check MPRIS support:**
    ```bash
    busctl --user list | grep MediaPlayer2
    ```
    You should see entries like `org.mpris.MediaPlayer2.spotify`.
 
-2. **Web browsers:** Firefox and Chromium expose MPRIS when playing audio/video. Make sure the media tab is active.
+2. **Web browsers:** Firefox and Chromium expose MPRIS when playing audio/video. Make sure the tab with media is active.
 
-3. **Flatpak players:** Some Flatpak apps don't expose D-Bus correctly. Check the app's permissions.
+### Album art not showing
 
-### Applet doesn't appear in the panel applet list
+- For **local music players**, art is usually embedded — should work automatically.
+- For **browsers playing YouTube**, the applet extracts the video ID from the track URL and fetches the thumbnail directly from YouTube's CDN.
+- For **Spotify**, art is fetched via HTTPS from Spotify's CDN.
+- If art still doesn't appear, check that the applet has network access and that the player is exposing `mpris:artUrl`.
 
-Make sure the `.desktop` file is installed:
+### Applet doesn't appear in the COSMIC Settings applet list
+
+Make sure all files are installed:
 ```bash
 ./install.sh status
 ```
 
-If the desktop entry is missing, reinstall:
+If anything is missing:
 ```bash
 ./install.sh reinstall
 ```
 
-### Scrolling feels janky
+### Applet overlaps other panel items after resizing
 
-Try adjusting the scroll speed in the settings popup. "Slow" (80ms ticks) provides the smoothest experience on lower-powered hardware.
+Drag the width slider and wait ~2 seconds after releasing — the panel redraws automatically once the resize request settles.
 
 ### Build errors about missing system libraries
 
-Install all development dependencies:
-```bash
-# Ubuntu/Pop!_OS
-sudo apt install cmake pkg-config libexpat1-dev libfontconfig-dev libfreetype-dev libxkbcommon-dev libinput-dev libgbm-dev libseat-dev libudev-dev
-```
+Install all development dependencies listed in the [Prerequisites](#prerequisites) section for your distro.
 
 ---
 
@@ -460,26 +433,12 @@ no-media = Sin reproducción
 widget-width = Ancho del widget
 scroll-speed = Velocidad de desplazamiento
 display-format = Formato de visualización
-speed-slow = Lento
-speed-medium = Medio
-speed-fast = Rápido
 format-title-only = Solo título
 format-artist-title = Artista — Título
 format-title-artist = Título — Artista
-app-title = Reproduciendo
+app-title = Reproduciendo ahora
+top-margin = Margen superior
 ```
-
----
-
-## Roadmap
-
-- [ ] Album art thumbnail in the popup
-- [ ] Playback controls (play/pause, next, previous) in the popup
-- [ ] Tooltip on hover with full track info
-- [ ] Progress bar indicator
-- [ ] Support for multiple simultaneous players
-- [ ] Custom font size setting
-- [ ] Click-through to focus the media player window
 
 ---
 
