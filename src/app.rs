@@ -96,6 +96,8 @@ pub struct NowPlaying {
     can_go_next: bool,
     /// Whether the active player supports skipping to the previous track.
     can_go_previous: bool,
+    /// Status message for the version update check.
+    update_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +147,7 @@ impl Default for NowPlaying {
             panel_hovered: false,
             can_go_next: true,
             can_go_previous: true,
+            update_status: None,
         }
     }
 }
@@ -533,6 +536,22 @@ impl NowPlaying {
             .push_maybe(icon_spacing_section)
             .push(hover_toggle);
 
+        let current_version = env!("CARGO_PKG_VERSION");
+        let version_label = widget::text::body(format!("Version: {}", current_version));
+        let check_update_btn = widget::button::standard("Check for updates")
+            .on_press(Message::CheckUpdate);
+        let status_label = widget::text::caption(self.update_status.clone().unwrap_or_default());
+        
+        let update_section = widget::column::with_capacity(3)
+            .spacing(8)
+            .align_x(cosmic::iced::alignment::Horizontal::Center)
+            .push(version_label)
+            .push(check_update_btn)
+            .push(status_label);
+
+        let content = content.push(widget::Space::new().width(Length::Fixed(0.0)).height(Length::Fixed(16.0)))
+            .push(update_section);
+
         self.core.applet.popup_container(content).into()
     }
 }
@@ -596,6 +615,10 @@ pub enum Message {
     SeekSliderChanged(f64),
     /// Seek slider was released — commit the seek to the player.
     SeekSliderReleased,
+    /// Check GitHub for updates.
+    CheckUpdate,
+    /// Update check completed.
+    UpdateCheckComplete(String),
 }
 
 /// Helper: creates the MPRIS poller stream.
@@ -1157,6 +1180,13 @@ impl cosmic::Application for NowPlaying {
                     }
                 }
             }
+            Message::CheckUpdate => {
+                self.update_status = Some("Checking...".to_string());
+                return Task::perform(check_for_updates(), |s| cosmic::Action::App(Message::UpdateCheckComplete(s)));
+            }
+            Message::UpdateCheckComplete(status) => {
+                self.update_status = Some(status);
+            }
         }
         Task::none()
     }
@@ -1241,4 +1271,42 @@ async fn fetch_art_bytes(url: &str) -> Option<Vec<u8>> {
         eprintln!("[art] unsupported url scheme: {url}");
         None
     }
+}
+
+async fn check_for_updates() -> String {
+    let client = match reqwest::Client::builder()
+        .user_agent("cosmic-media-now-playing-applet/0.1")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return "Failed to create HTTP client.".to_string(),
+    };
+
+    let url = "https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/Cargo.toml";
+    let resp = match client.get(url).send().await {
+        Ok(r) => r,
+        Err(_) => return "Failed to connect to GitHub.".to_string(),
+    };
+
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(_) => return "Failed to read response.".to_string(),
+    };
+
+    for line in text.lines() {
+        if line.starts_with("version = ") {
+            let parts: Vec<&str> = line.split('"').collect();
+            if parts.len() >= 2 {
+                let remote_version = parts[1];
+                let local_version = env!("CARGO_PKG_VERSION");
+                if remote_version == local_version {
+                    return format!("Up to date (v{})", local_version);
+                } else {
+                    return format!("Update available: v{} (Current: v{})", remote_version, local_version);
+                }
+            }
+        }
+    }
+
+    "Could not parse version from main branch.".to_string()
 }
