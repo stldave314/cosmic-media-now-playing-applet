@@ -21,12 +21,8 @@ const SCROLL_GAP: &str = "    ·    ";
 /// Approximate character width in pixels for estimating overflow.
 const APPROX_CHAR_WIDTH: f32 = 8.0;
 
-/// Spacing in pixels between the leading icon and the text in the panel row.
-const ROW_SPACING: f32 = 6.0;
-
-/// Pixels consumed by the music-note icon and its spacing, subtracted from the
-/// available text area so short titles are not clipped by the container edge.
-const ICON_AREA_WIDTH: f32 = 22.0; // icon 16px + row spacing 6px
+/// Size in pixels of the music-note fallback icon in the panel.
+const MUSIC_NOTE_SIZE: f32 = 16.0;
 
 /// Approximate width in pixels of a single panel playback-control button,
 /// including its spacing. Used to decide whether all three controls fit.
@@ -171,11 +167,12 @@ impl NowPlaying {
     /// Pixels available for content beside the leading icon, after subtracting
     /// the icon's footprint and the horizontal margins.
     fn available_panel_width(&self) -> f32 {
-        // Icon footprint = icon width + the 6px row spacing.
+        // Icon footprint = icon width + the configurable gap after it.
+        let gap = self.config.icon_spacing as f32;
         let icon_area = match self.config.panel_icon {
             PanelIcon::None => 0.0,
-            PanelIcon::MusicNote => ICON_AREA_WIDTH,
-            PanelIcon::AlbumArt => self.config.panel_art_size as f32 + ROW_SPACING,
+            PanelIcon::MusicNote => MUSIC_NOTE_SIZE + gap,
+            PanelIcon::AlbumArt => self.config.panel_art_size as f32 + gap,
         };
         let margins = (self.config.left_margin.max(0) + self.config.right_margin.max(0)) as f32;
         (self.config.widget_width as f32 - icon_area - margins).max(0.0)
@@ -450,6 +447,28 @@ impl NowPlaying {
         )
         .step(1.0);
 
+        // Gap between the icon/art and the title — only relevant when an icon
+        // is shown, so omit it entirely under "No Icon".
+        let icon_spacing_section: Option<Element<'_, Message>> =
+            (self.config.panel_icon != PanelIcon::None).then(|| {
+                widget::column::with_capacity(2)
+                    .spacing(12)
+                    .push(widget::text::body(format!(
+                        "{}: {}px",
+                        fl!("icon-spacing"),
+                        self.config.icon_spacing
+                    )))
+                    .push(
+                        widget::slider(
+                            0.0..=40.0,
+                            self.config.icon_spacing as f32,
+                            Message::SetIconSpacing,
+                        )
+                        .step(1.0),
+                    )
+                    .into()
+            });
+
         let panel_icon_label = widget::text::body(fl!("panel-icon"));
         let panel_icon_options: Vec<String> = vec![
             fl!("panel-icon-album-art"),
@@ -511,6 +530,7 @@ impl NowPlaying {
             .push(panel_icon_dropdown)
             .push(art_size_label)
             .push(art_size_slider)
+            .push_maybe(icon_spacing_section)
             .push(hover_toggle);
 
         self.core.applet.popup_container(content).into()
@@ -556,6 +576,8 @@ pub enum Message {
     SetPanelIcon(PanelIcon),
     /// User changed the panel album-art thumbnail size.
     SetPanelArtSize(f32),
+    /// User changed the gap between the icon and the title.
+    SetIconSpacing(f32),
     /// User toggled whether playback controls appear on panel hover.
     SetHoverControls(bool),
     /// Pointer moved over a surface (carries the surface's window id). A move on
@@ -729,7 +751,8 @@ impl cosmic::Application for NowPlaying {
             widget::row::with_capacity(2)
                 .push(leading_icon)
                 .push(widget::container(controls).center_x(Length::Fill))
-                .spacing(ROW_SPACING)
+                .width(Length::Fill)
+                .spacing(self.config.icon_spacing as f32)
                 .align_y(Vertical::Center)
                 .into()
         } else {
@@ -741,8 +764,13 @@ impl cosmic::Application for NowPlaying {
             if let Some(leading) = leading {
                 row = row.push(leading);
             }
+            // The row must fill the width so the text container's `Fill` resolves
+            // to a stable, fixed clip window. Otherwise the row shrinks to the
+            // text's natural (proportional-font) width, which changes as the
+            // marquee scrolls and makes the right edge appear to wander.
             row.push(widget::container(text).width(Length::Fill).clip(true))
-                .spacing(ROW_SPACING)
+                .width(Length::Fill)
+                .spacing(self.config.icon_spacing as f32)
                 .align_y(Vertical::Center)
                 .into()
         };
@@ -1040,6 +1068,12 @@ impl cosmic::Application for NowPlaying {
             Message::SetPanelArtSize(size) => {
                 self.config.panel_art_size = size as u32;
                 // The art footprint affects the available text width.
+                self.scroll_offset = 0;
+                self.save_config();
+            }
+            Message::SetIconSpacing(gap) => {
+                self.config.icon_spacing = gap as u32;
+                // The gap affects the available text width.
                 self.scroll_offset = 0;
                 self.save_config();
             }

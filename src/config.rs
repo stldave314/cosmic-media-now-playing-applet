@@ -75,6 +75,9 @@ pub struct NowPlayingConfig {
     /// Show playback control buttons in the panel while hovering. Only takes
     /// effect when `panel_icon` is not `PanelIcon::None`.
     pub show_hover_controls: bool,
+    /// Gap in pixels between the leading icon/art and the scrolling title
+    /// (0..=40). Only meaningful when `panel_icon` is not `PanelIcon::None`.
+    pub icon_spacing: u32,
 }
 
 impl Default for NowPlayingConfig {
@@ -90,6 +93,7 @@ impl Default for NowPlayingConfig {
             panel_icon: PanelIcon::default(),
             panel_art_size: 16,
             show_hover_controls: true,
+            icon_spacing: 6,
         }
     }
 }
