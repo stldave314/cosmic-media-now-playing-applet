@@ -376,13 +376,13 @@ impl NowPlaying {
             widget::slider(100.0..=500.0, self.slider_width as f32, Message::SetWidth)
                 .step(10.0);
 
-        let speed_label = widget::text::body(format!(
-            "{}: {}/10",
-            fl!("scroll-speed"),
-            self.config.scroll_speed
-        ));
+        let speed_label = widget::text::body(if self.config.scroll_speed == 0 {
+            format!("{}: {}", fl!("scroll-speed"), fl!("scroll-off"))
+        } else {
+            format!("{}: {}/10", fl!("scroll-speed"), self.config.scroll_speed)
+        });
         let speed_slider = widget::slider(
-            1.0..=10.0,
+            0.0..=10.0,
             self.config.scroll_speed as f32,
             |v| Message::SetScrollSpeed(v as u32),
         ).step(1.0);
@@ -540,6 +540,9 @@ impl NowPlaying {
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// No-op; used to satisfy `Task::perform` completion callbacks that don't
+    /// need to update any state.
+    Ignore,
     /// Toggle the configuration popup on/off.
     TogglePopup,
     /// A popup window was closed.
@@ -818,8 +821,9 @@ impl cosmic::Application for NowPlaying {
                 .map(|update| Message::ConfigChanged(update.config)),
         ];
 
-        // 3. Scroll timer — only active when the text overflows.
-        if self.needs_scroll() {
+        // 3. Scroll timer — only active when the text overflows and scrolling
+        // isn't disabled (speed 0 keeps the visible portion static).
+        if self.needs_scroll() && self.config.scroll_speed > 0 {
             subs.push(Subscription::run_with(self.config.scroll_speed, scroll_timer_stream));
         }
 
@@ -1009,6 +1013,7 @@ impl cosmic::Application for NowPlaying {
                     }
                 }
             }
+            Message::Ignore => {}
             Message::ScrollTick => {
                 if self.needs_scroll() {
                     let total_chars =
@@ -1036,7 +1041,12 @@ impl cosmic::Application for NowPlaying {
                 }
             }
             Message::SetScrollSpeed(level) => {
-                self.config.scroll_speed = level.clamp(1, 10);
+                self.config.scroll_speed = level.clamp(0, 10);
+                // When scrolling is turned off, snap back to the start so the
+                // static view shows the beginning of the title.
+                if self.config.scroll_speed == 0 {
+                    self.scroll_offset = 0;
+                }
                 self.save_config();
             }
             Message::SetDisplayFormat(format) => {
@@ -1109,7 +1119,7 @@ impl cosmic::Application for NowPlaying {
                 let target_bus = self.active_player_bus.clone()
                     .or_else(|| self.players.first().map(|p| p.bus_name.clone()));
                 if let Some(bus) = target_bus {
-                    return Task::perform(crate::mpris::send_command(bus, cmd), |_| cosmic::Action::App(Message::ScrollTick));
+                    return Task::perform(crate::mpris::send_command(bus, cmd), |_| cosmic::Action::App(Message::Ignore));
                 }
             }
             Message::ConfigChanged(config) => {
@@ -1142,7 +1152,7 @@ impl cosmic::Application for NowPlaying {
                         };
                         return Task::perform(
                             mpris::send_command(bus_name, cmd),
-                            |_| cosmic::Action::App(Message::ScrollTick),
+                            |_| cosmic::Action::App(Message::Ignore),
                         );
                     }
                 }

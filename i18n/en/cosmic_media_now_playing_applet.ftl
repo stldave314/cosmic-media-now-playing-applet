@@ -1,6 +1,7 @@
 no-media = No media playing
 widget-width = Widget Width
 scroll-speed = Scroll Speed
+scroll-off = Off
 display-format = Display Format
 format-title-only = Title Only
 format-artist-title = Artist — Title
