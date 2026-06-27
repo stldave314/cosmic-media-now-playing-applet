@@ -31,6 +31,23 @@ impl DisplayFormat {
     }
 }
 
+/// Which leading element to show beside the scrolling text in the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PanelIcon {
+    /// Album artwork thumbnail, falling back to the music-note icon when none.
+    AlbumArt,
+    /// Always the generic music-note icon.
+    MusicNote,
+    /// No leading element at all (takes up no space).
+    None,
+}
+
+impl Default for PanelIcon {
+    fn default() -> Self {
+        Self::AlbumArt
+    }
+}
+
 /// Persistent configuration for the Now Playing applet.
 ///
 /// Stored and loaded automatically via `cosmic-config`.
@@ -45,8 +62,16 @@ pub struct NowPlayingConfig {
     pub display_format: DisplayFormat,
     /// Top margin in pixels to shift the text vertically within the applet (-10..=20).
     pub top_margin: i32,
+    /// Left margin in pixels, inset before the panel content (0..=40).
+    pub left_margin: i32,
+    /// Right margin in pixels, inset after the panel content (0..=40).
+    pub right_margin: i32,
     /// The specific MPRIS bus name the user has chosen to control, if any.
     pub selected_player: Option<String>,
+    /// Which leading element to show beside the panel text.
+    pub panel_icon: PanelIcon,
+    /// Size in pixels of the album-art thumbnail in the panel (12..=48).
+    pub panel_art_size: u32,
 }
 
 impl Default for NowPlayingConfig {
@@ -56,7 +81,11 @@ impl Default for NowPlayingConfig {
             scroll_speed: 5,
             display_format: DisplayFormat::default(),
             top_margin: 0,
+            left_margin: 0,
+            right_margin: 0,
             selected_player: None,
+            panel_icon: PanelIcon::default(),
+            panel_art_size: 16,
         }
     }
 }

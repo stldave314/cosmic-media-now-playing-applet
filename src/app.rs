@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::config::{DisplayFormat, NowPlayingConfig};
+use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
 use crate::fl;
 use crate::mpris;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -20,6 +20,9 @@ const SCROLL_GAP: &str = "    ·    ";
 
 /// Approximate character width in pixels for estimating overflow.
 const APPROX_CHAR_WIDTH: f32 = 8.0;
+
+/// Spacing in pixels between the leading icon and the text in the panel row.
+const ROW_SPACING: f32 = 6.0;
 
 /// Pixels consumed by the music-note icon and its spacing, subtracted from the
 /// available text area so short titles are not clipped by the container edge.
@@ -75,6 +78,18 @@ pub struct NowPlaying {
     slider_width: u32,
     /// Monotonically-increasing counter used to debounce width commits.
     width_settle_gen: u64,
+    /// Current playback position in microseconds (from MPRIS).
+    position_us: i64,
+    /// Current track duration in microseconds (from MPRIS metadata, 0 = unknown).
+    length_us: i64,
+    /// MPRIS track ID object path for the active track (required by SetPosition).
+    track_id: String,
+    /// Track URL for the active track (xesam:url) — opened in browser on art click.
+    track_url: Option<String>,
+    /// Progress slider value while the user is dragging (0.0–1.0).
+    seek_value: f64,
+    /// Whether the seek slider is currently being dragged by the user.
+    seeking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +130,12 @@ impl Default for NowPlaying {
             last_playing_buses: Vec::new(),
             slider_width: NowPlayingConfig::default().widget_width,
             width_settle_gen: 0,
+            position_us: 0,
+            length_us: 0,
+            track_id: String::new(),
+            track_url: None,
+            seek_value: 0.0,
+            seeking: false,
         }
     }
 }
@@ -134,9 +155,23 @@ impl NowPlaying {
         self.scroll_offset = 0;
     }
 
+    /// Maximum number of characters that fit in the panel text area, accounting
+    /// for the leading icon's footprint and horizontal margins when shown.
+    fn max_visible_chars(&self) -> usize {
+        // Icon footprint = icon width + the 6px row spacing.
+        let icon_area = match self.config.panel_icon {
+            PanelIcon::None => 0.0,
+            PanelIcon::MusicNote => ICON_AREA_WIDTH,
+            PanelIcon::AlbumArt => self.config.panel_art_size as f32 + ROW_SPACING,
+        };
+        let margins = (self.config.left_margin.max(0) + self.config.right_margin.max(0)) as f32;
+        let available = (self.config.widget_width as f32 - icon_area - margins).max(0.0);
+        (available / APPROX_CHAR_WIDTH) as usize
+    }
+
     /// Returns the visible portion of the display text for the marquee effect.
     fn visible_text(&self) -> String {
-        let max_chars = ((self.config.widget_width as f32 - ICON_AREA_WIDTH) / APPROX_CHAR_WIDTH) as usize;
+        let max_chars = self.max_visible_chars();
 
         if self.display_text.chars().count() <= max_chars {
             // Text fits — no scrolling needed.
@@ -153,8 +188,7 @@ impl NowPlaying {
 
     /// Whether the text overflows and needs scrolling.
     fn needs_scroll(&self) -> bool {
-        let max_chars = ((self.config.widget_width as f32 - ICON_AREA_WIDTH) / APPROX_CHAR_WIDTH) as usize;
-        self.display_text.chars().count() > max_chars
+        self.display_text.chars().count() > self.max_visible_chars()
     }
 
     /// Persist the current config to disk via cosmic-config.
@@ -173,7 +207,7 @@ impl NowPlaying {
 
     /// The Media controls view with album art.
     fn view_media(&self) -> Element<'_, Message> {
-        let art: Element<'_, Message> = if let Some(handle) = &self.art_image {
+        let art_inner: Element<'_, Message> = if let Some(handle) = &self.art_image {
             widget::Image::new(handle.clone())
                 .border_radius([16.0; 4])
                 .content_fit(cosmic::iced::ContentFit::Cover)
@@ -182,6 +216,16 @@ impl NowPlaying {
                 .into()
         } else {
             widget::icon::from_name("audio-x-generic-symbolic").size(128).into()
+        };
+
+        // Wrap art in a button when there's a URL to open; plain container otherwise.
+        let art: Element<'_, Message> = if self.track_url.is_some() {
+            widget::button::custom(art_inner)
+                .on_press(Message::OpenTrackUrl)
+                .class(cosmic::theme::Button::Text)
+                .into()
+        } else {
+            art_inner
         };
 
         let art_container = widget::container(art)
@@ -198,7 +242,7 @@ impl NowPlaying {
 
         let btn_prev = widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
             .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous));
-        
+
         let play_pause_icon = if self.playback_status == "Playing" {
             "media-playback-pause-symbolic"
         } else {
@@ -206,7 +250,7 @@ impl NowPlaying {
         };
         let btn_play_pause = widget::button::icon(widget::icon::from_name(play_pause_icon))
             .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause));
-            
+
         let btn_next = widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
             .on_press(Message::PlayerCommand(mpris::MprisCommand::Next));
 
@@ -216,6 +260,38 @@ impl NowPlaying {
             .push(btn_play_pause)
             .push(btn_next)
             .align_y(Vertical::Center);
+
+        // Progress / seek bar — only shown when the player reports a known duration.
+        let progress_bar: Option<Element<'_, Message>> = if self.length_us > 0 {
+            let progress = if self.seeking {
+                self.seek_value
+            } else {
+                (self.position_us as f64 / self.length_us as f64).clamp(0.0, 1.0)
+            };
+            let elapsed_secs = if self.seeking {
+                (self.seek_value * self.length_us as f64 / 1_000_000.0) as u64
+            } else {
+                (self.position_us.max(0) as f64 / 1_000_000.0) as u64
+            };
+            let total_secs = (self.length_us as f64 / 1_000_000.0) as u64;
+            let time_label = widget::text::caption(format!(
+                "{}:{:02} / {}:{:02}",
+                elapsed_secs / 60, elapsed_secs % 60,
+                total_secs / 60,   total_secs % 60,
+            ));
+            let seek_slider = widget::slider(0.0..=1.0, progress, Message::SeekSliderChanged)
+                .step(0.001)
+                .on_release(Message::SeekSliderReleased);
+            Some(
+                widget::column::with_capacity(2)
+                    .spacing(2)
+                    .push(seek_slider)
+                    .push(widget::container(time_label).center_x(Length::Fill))
+                    .into()
+            )
+        } else {
+            None
+        };
 
         let settings_btn = widget::button::icon(widget::icon::from_name("emblem-system-symbolic"))
             .on_press(Message::SwitchPopupView(PopupState::SettingsView));
@@ -242,15 +318,18 @@ impl NowPlaying {
                 .align_y(Vertical::Center)
         };
 
-        let content = widget::column::with_capacity(5)
+        let mut content = widget::column::with_capacity(6)
             .spacing(16)
             .padding(16)
             .align_x(cosmic::iced::alignment::Horizontal::Center)
             .push(header)
             .push(art_container)
             .push(title)
-            .push(artist)
-            .push(controls);
+            .push(artist);
+        if let Some(bar) = progress_bar {
+            content = content.push(bar);
+        }
+        let content = content.push(controls);
 
         self.core.applet.popup_container(content).into()
     }
@@ -310,7 +389,58 @@ impl NowPlaying {
             widget::slider(-10.0..=20.0, self.config.top_margin as f32, Message::SetTopMargin)
                 .step(1.0);
 
-        let content = widget::column::with_capacity(9)
+        let left_margin_label = widget::text::body(format!(
+            "{}: {}px",
+            fl!("left-margin"),
+            self.config.left_margin
+        ));
+        let left_margin_slider =
+            widget::slider(0.0..=40.0, self.config.left_margin as f32, Message::SetLeftMargin)
+                .step(1.0);
+
+        let right_margin_label = widget::text::body(format!(
+            "{}: {}px",
+            fl!("right-margin"),
+            self.config.right_margin
+        ));
+        let right_margin_slider =
+            widget::slider(0.0..=40.0, self.config.right_margin as f32, Message::SetRightMargin)
+                .step(1.0);
+
+        let art_size_label = widget::text::body(format!(
+            "{}: {}px",
+            fl!("art-size"),
+            self.config.panel_art_size
+        ));
+        let art_size_slider = widget::slider(
+            12.0..=48.0,
+            self.config.panel_art_size as f32,
+            Message::SetPanelArtSize,
+        )
+        .step(1.0);
+
+        let panel_icon_label = widget::text::body(fl!("panel-icon"));
+        let panel_icon_options: Vec<String> = vec![
+            fl!("panel-icon-album-art"),
+            fl!("panel-icon-music-note"),
+            fl!("panel-icon-none"),
+        ];
+        let panel_icon_selected = Some(match self.config.panel_icon {
+            PanelIcon::AlbumArt => 0,
+            PanelIcon::MusicNote => 1,
+            PanelIcon::None => 2,
+        });
+        let panel_icon_dropdown = widget::dropdown(
+            panel_icon_options,
+            panel_icon_selected,
+            |i| Message::SetPanelIcon(match i {
+                0 => PanelIcon::AlbumArt,
+                1 => PanelIcon::MusicNote,
+                _ => PanelIcon::None,
+            }),
+        );
+
+        let content = widget::column::with_capacity(17)
             .spacing(12)
             .padding(16)
             .push(
@@ -324,10 +454,18 @@ impl NowPlaying {
             .push(width_slider)
             .push(margin_label)
             .push(margin_slider)
+            .push(left_margin_label)
+            .push(left_margin_slider)
+            .push(right_margin_label)
+            .push(right_margin_slider)
             .push(speed_label)
             .push(speed_slider)
             .push(format_label)
-            .push(format_dropdown);
+            .push(format_dropdown)
+            .push(panel_icon_label)
+            .push(panel_icon_dropdown)
+            .push(art_size_label)
+            .push(art_size_slider);
 
         self.core.applet.popup_container(content).into()
     }
@@ -364,8 +502,22 @@ pub enum Message {
     SetDisplayFormat(DisplayFormat),
     /// User changed the top margin.
     SetTopMargin(f32),
+    /// User changed the left margin.
+    SetLeftMargin(f32),
+    /// User changed the right margin.
+    SetRightMargin(f32),
+    /// User changed which icon is shown in the panel.
+    SetPanelIcon(PanelIcon),
+    /// User changed the panel album-art thumbnail size.
+    SetPanelArtSize(f32),
     /// Configuration was changed externally (e.g. another instance or file edit).
     ConfigChanged(NowPlayingConfig),
+    /// Open the track URL in the system browser.
+    OpenTrackUrl,
+    /// Seek slider is being dragged (0.0–1.0 fractional position).
+    SeekSliderChanged(f64),
+    /// Seek slider was released — commit the seek to the player.
+    SeekSliderReleased,
 }
 
 /// Helper: creates the MPRIS poller stream.
@@ -450,22 +602,49 @@ impl cosmic::Application for NowPlaying {
             ).into();
         }
 
-        let icon = widget::icon::from_name("audio-x-generic-symbolic").size(16);
+        // The leading element beside the panel text depends on the user setting:
+        // album art (with music-note fallback), always music note, or nothing.
+        let music_note = || -> Element<'_, Message> {
+            widget::icon::from_name("audio-x-generic-symbolic").size(16).into()
+        };
+        let art_size = self.config.panel_art_size as f32;
+        let leading: Option<Element<'_, Message>> = match self.config.panel_icon {
+            PanelIcon::AlbumArt => Some(if let Some(handle) = &self.art_image {
+                widget::Image::new(handle.clone())
+                    .border_radius([3.0; 4])
+                    .content_fit(cosmic::iced::ContentFit::Cover)
+                    .width(Length::Fixed(art_size))
+                    .height(Length::Fixed(art_size))
+                    .into()
+            } else {
+                music_note()
+            }),
+            PanelIcon::MusicNote => Some(music_note()),
+            PanelIcon::None => None,
+        };
         let text = widget::text::body(self.visible_text())
             .wrapping(cosmic::iced::widget::text::Wrapping::None);
 
-        let content = widget::row::with_capacity(2)
-            .push(icon)
+        let mut content = widget::row::with_capacity(2);
+        if let Some(leading) = leading {
+            content = content.push(leading);
+        }
+        let content = content
             .push(
                 widget::container(text)
                     .width(Length::Fill)
                     .clip(true),
             )
-            .spacing(6)
+            .spacing(ROW_SPACING)
             .align_y(Vertical::Center);
 
-        let content = widget::container(content)
-            .padding([self.config.top_margin.max(0) as u16, 0, 0, 0]);
+        // padding order is [top, right, bottom, left].
+        let content = widget::container(content).padding([
+            self.config.top_margin.max(0) as u16,
+            self.config.right_margin.max(0) as u16,
+            0,
+            self.config.left_margin.max(0) as u16,
+        ]);
 
         let button = widget::button::custom(content)
             .width(Length::Fixed(self.config.widget_width as f32))
@@ -575,13 +754,17 @@ impl cosmic::Application for NowPlaying {
                 self.last_playing_buses = currently_playing;
                 self.players = players;
 
-                let (title, artist, art_url, art_bytes, status, has_player, active_bus) =
+                let (title, artist, art_url, art_bytes, status, has_player, active_bus,
+                     new_length_us, new_track_id, new_position_us, new_track_url) =
                     if let Some(p) = active_player {
                         let bus = p.bus_name.clone();
                         (p.metadata.title, p.metadata.artist, p.metadata.art_url,
-                         p.metadata.art_bytes, p.playback_status, true, Some(bus))
+                         p.metadata.art_bytes, p.playback_status, true, Some(bus),
+                         p.metadata.length_us, p.metadata.track_id, p.position_us,
+                         p.metadata.track_url)
                     } else {
-                        (String::new(), String::new(), None, None, "Stopped".to_string(), false, None)
+                        (String::new(), String::new(), None, None,
+                         "Stopped".to_string(), false, None, 0i64, String::new(), 0i64, None)
                     };
 
                 let changed = self.track_title != title
@@ -592,6 +775,20 @@ impl cosmic::Application for NowPlaying {
 
                 self.playback_status = status;
                 self.active_player_bus = active_bus;
+
+                self.track_url = new_track_url;
+
+                // Update position/duration. When the track changes, reset seek state.
+                if new_track_id != self.track_id {
+                    self.seeking = false;
+                    self.seek_value = 0.0;
+                }
+                self.length_us = new_length_us;
+                self.track_id = new_track_id;
+                // Don't clobber the slider while the user is dragging.
+                if !self.seeking {
+                    self.position_us = new_position_us;
+                }
 
                 if changed {
                     self.track_title = title;
@@ -680,6 +877,29 @@ impl cosmic::Application for NowPlaying {
                 self.config.top_margin = m as i32;
                 self.save_config();
             }
+            Message::SetLeftMargin(m) => {
+                self.config.left_margin = m as i32;
+                // Horizontal margins reduce the text area, so re-evaluate scrolling.
+                self.scroll_offset = 0;
+                self.save_config();
+            }
+            Message::SetRightMargin(m) => {
+                self.config.right_margin = m as i32;
+                self.scroll_offset = 0;
+                self.save_config();
+            }
+            Message::SetPanelIcon(icon) => {
+                self.config.panel_icon = icon;
+                // Width available for text changes when the icon is toggled off/on.
+                self.scroll_offset = 0;
+                self.save_config();
+            }
+            Message::SetPanelArtSize(size) => {
+                self.config.panel_art_size = size as u32;
+                // The art footprint affects the available text width.
+                self.scroll_offset = 0;
+                self.save_config();
+            }
             Message::SwitchPopupView(state) => {
                 self.popup_state = state;
             }
@@ -701,6 +921,34 @@ impl cosmic::Application for NowPlaying {
                     self.config = config;
                     self.slider_width = self.config.widget_width;
                     self.rebuild_display_text();
+                }
+            }
+            Message::OpenTrackUrl => {
+                if let Some(url) = &self.track_url {
+                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                }
+            }
+            Message::SeekSliderChanged(value) => {
+                self.seeking = true;
+                self.seek_value = value;
+            }
+            Message::SeekSliderReleased => {
+                self.seeking = false;
+                if self.length_us > 0 && !self.track_id.is_empty() {
+                    let target_us = (self.seek_value * self.length_us as f64) as i64;
+                    self.position_us = target_us;
+                    let bus = self.active_player_bus.clone()
+                        .or_else(|| self.players.first().map(|p| p.bus_name.clone()));
+                    if let Some(bus_name) = bus {
+                        let cmd = mpris::MprisCommand::SetPosition {
+                            track_id: self.track_id.clone(),
+                            position_us: target_us,
+                        };
+                        return Task::perform(
+                            mpris::send_command(bus_name, cmd),
+                            |_| cosmic::Action::App(Message::ScrollTick),
+                        );
+                    }
                 }
             }
         }

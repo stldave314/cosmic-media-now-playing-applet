@@ -90,6 +90,12 @@ pub struct TrackMetadata {
     /// Pre-fetched image bytes for file:// art URLs, read immediately while the
     /// temporary file still exists (browsers delete it shortly after writing).
     pub art_bytes: Option<Vec<u8>>,
+    /// Track duration in microseconds (0 if unknown).
+    pub length_us: i64,
+    /// MPRIS track ID object path (required by SetPosition).
+    pub track_id: String,
+    /// The track's canonical URL (xesam:url) — used to open the track in a browser.
+    pub track_url: Option<String>,
 }
 
 impl PartialEq for TrackMetadata {
@@ -97,16 +103,21 @@ impl PartialEq for TrackMetadata {
         self.title == other.title
             && self.artist == other.artist
             && self.art_url == other.art_url
+            && self.length_us == other.length_us
+            && self.track_id == other.track_id
     }
 }
 impl Eq for TrackMetadata {}
 
 /// Commands that can be sent to the MPRIS player.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MprisCommand {
     PlayPause,
     Next,
     Previous,
+    /// Seek to an absolute position (microseconds) using MPRIS SetPosition.
+    /// Requires the track's MPRIS object-path ID and the target position.
+    SetPosition { track_id: String, position_us: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +126,8 @@ pub struct PlayerInfo {
     pub identity: String,
     pub metadata: TrackMetadata,
     pub playback_status: String,
+    /// Current playback position in microseconds (0 if unknown).
+    pub position_us: i64,
 }
 
 /// Find all active MPRIS media players and return their information.
@@ -181,6 +194,24 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
                 .get("xesam:url")
                 .and_then(|v| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v.clone()).ok());
 
+            // Duration in microseconds (mpris:length is int64).
+            let length_us: i64 = metadata_map
+                .get("mpris:length")
+                .and_then(|v| <i64 as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v.clone()).ok())
+                .unwrap_or(0);
+
+            // Track ID object path (required by SetPosition).
+            let track_id: String = metadata_map
+                .get("mpris:trackid")
+                .and_then(|v| {
+                    // Try as ObjectPath first, then as plain string.
+                    <zbus::zvariant::OwnedObjectPath as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v.clone())
+                        .map(|op| op.to_string())
+                        .ok()
+                        .or_else(|| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v.clone()).ok())
+                })
+                .unwrap_or_default();
+
             // Read file:// art immediately — browsers delete the temp file shortly
             // after writing it, so a deferred async fetch always misses it.
             let art_bytes = if let Some(path) = art_url.as_deref().and_then(|u| u.strip_prefix("file://")) {
@@ -205,11 +236,11 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
 
             eprintln!(
                 "[mpris] {bus_name}: title={title:?} art_url={original_art_url:?} \
-                 track_url={track_url:?} bytes={} → final art_url={art_url:?}",
+                 track_url={track_url:?} bytes={} length_us={length_us} → final art_url={art_url:?}",
                 art_bytes.as_ref().map_or(0, |b| b.len()),
             );
 
-            TrackMetadata { title, artist, art_url, art_bytes }
+            TrackMetadata { title, artist, art_url, art_bytes, length_us, track_id, track_url }
         } else {
             TrackMetadata::default()
         };
@@ -221,11 +252,20 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
             .and_then(|v| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
             .unwrap_or_else(|| "Stopped".to_string());
 
+        // Current playback position in microseconds.
+        let position_us: i64 = player_proxy
+            .get_property::<zbus::zvariant::OwnedValue>("Position")
+            .await
+            .ok()
+            .and_then(|v| <i64 as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
+            .unwrap_or(0);
+
         players.push(PlayerInfo {
             bus_name,
             identity,
             metadata,
             playback_status,
+            position_us,
         });
     }
 
@@ -234,21 +274,25 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
 
 /// Sends a command to a specific MPRIS media player.
 pub async fn send_command(bus_name: String, command: MprisCommand) {
-    if let Ok(connection) = Connection::session().await {
-        let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(&connection)
-            .destination(bus_name.as_str())
-            .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
-            .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"));
-        if let Ok(player_proxy) = match cmd_builder {
-            Ok(b) => b.build().await,
-            Err(e) => Err(e),
-        } {
-            let method = match command {
-                MprisCommand::PlayPause => "PlayPause",
-                MprisCommand::Next => "Next",
-                MprisCommand::Previous => "Previous",
-            };
-            let _ = player_proxy.call_method(method, &()).await;
+    let Ok(connection) = Connection::session().await else { return };
+    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(&connection)
+        .destination(bus_name.as_str())
+        .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
+        .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"));
+    let Ok(player_proxy) = (match cmd_builder {
+        Ok(b) => b.build().await,
+        Err(e) => Err(e),
+    }) else { return };
+
+    match command {
+        MprisCommand::PlayPause => { let _ = player_proxy.call_method("PlayPause", &()).await; }
+        MprisCommand::Next      => { let _ = player_proxy.call_method("Next", &()).await; }
+        MprisCommand::Previous  => { let _ = player_proxy.call_method("Previous", &()).await; }
+        MprisCommand::SetPosition { track_id, position_us } => {
+            // SetPosition(o: TrackId, x: Position)
+            if let Ok(obj_path) = zbus::zvariant::ObjectPath::try_from(track_id.as_str()) {
+                let _ = player_proxy.call_method("SetPosition", &(obj_path, position_us)).await;
+            }
         }
     }
 }
