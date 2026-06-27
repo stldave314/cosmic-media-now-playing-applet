@@ -28,7 +28,7 @@
 
 **cosmic-media-now-playing-applet** is a lightweight panel applet that integrates with any [MPRIS](https://specifications.freedesktop.org/mpris-spec/latest/)-compatible media player (Spotify, Firefox, Chromium, VLC, Rhythmbox, Amberol, etc.) and displays the currently playing track directly on your COSMIC panel bar.
 
-The applet shows album art, playback controls, and the track title in a popup. When the track name is too long to fit in the panel widget, it scrolls smoothly in a marquee-style animation. All settings are configurable through the popup and persist across restarts.
+On the panel it shows the album art (or a music-note icon) alongside the track title, and — when you hover — inline playback controls. Click anywhere on the widget to open a popup with larger album art, a seekable progress bar, playback controls, a player selector, and settings. When the track name is too long to fit, it scrolls smoothly in a marquee-style animation (which you can also turn off). All settings are configurable through the popup and persist across restarts.
 
 When no media is playing, the applet takes up no panel space at all.
 
@@ -38,14 +38,20 @@ When no media is playing, the applet takes up no panel space at all.
 
 | Feature | Description |
 |---------|-------------|
-| **🎵 Inline Panel Display** | Shows a music icon and track name directly on the COSMIC panel bar |
-| **🖼️ Album Art** | Displays rounded album art in the popup, fetched from any source |
-| **⏯️ Playback Controls** | Play/pause, previous, and next buttons in the popup |
+| **🎵 Inline Panel Display** | Shows the album art (or music-note icon) and track name directly on the COSMIC panel bar |
+| **🖼️ Album Art on the Panel** | The panel icon can be the live album art thumbnail, a music note, or nothing — your choice |
+| **🎚️ Hover Controls** | Hover the panel to reveal previous / play-pause / next buttons inline; clicking the art/icon still opens the popup |
+| **⏯️ Playback Controls** | Play/pause, previous, and next — in both the popup and the panel hover bar |
+| **🧭 Capability-Aware Buttons** | Previous/next buttons are hidden automatically when the player doesn't support them |
+| **⏩ Seekable Progress Bar** | Scrub through the track with a draggable progress slider in the popup |
+| **🔗 Click Art to Open Source** | Clicking the popup album art opens the track's URL (e.g. the YouTube tab) in your browser |
 | **🎛️ Player Selector** | Dropdown to choose which player to control when multiple are active |
 | **🔄 Auto-Switching** | Automatically follows whichever player starts playing |
-| **📜 Marquee Scrolling** | Long track titles scroll smoothly with adjustable speed |
+| **📜 Marquee Scrolling** | Long track titles scroll smoothly with adjustable speed — or set it to **Off** for a static title |
 | **📏 Configurable Width** | Adjust the widget width from 100px to 500px via a slider |
+| **📐 Margins & Spacing** | Tune top / left / right margins and the icon-to-title gap |
 | **🎨 Display Formats** | Choose between Title Only, Artist — Title, or Title — Artist |
+| **🖱️ Click Anywhere** | The whole panel widget is clickable (with a pointer cursor) to open the popup |
 | **👻 Invisible When Idle** | Takes up zero panel space when nothing is playing |
 | **💾 Persistent Settings** | Configuration survives restarts via COSMIC's `cosmic-config` system |
 | **🔌 Universal Compatibility** | Works with **any** MPRIS-compatible media player |
@@ -218,25 +224,36 @@ cargo run --release
 When media is playing, the applet shows on the panel:
 
 ```
-♫ Artist Name — Track Title
+[🖼] Artist Name — Track Title
 ```
 
 - **Nothing playing:** the applet is completely invisible and takes up no space
-- **Text too long:** it scrolls smoothly like a marquee
-- **Click the applet:** opens a popup with album art, track info, playback controls, and settings
+- **Text too long:** it scrolls smoothly like a marquee (or stays static if scrolling is set to Off)
+- **Hover the applet:** inline previous / play-pause / next buttons appear (when "Show Controls on Hover" is enabled and a panel icon is shown)
+- **Click anywhere on the applet:** opens a popup with album art, a progress bar, track info, playback controls, and settings
 
 ---
 
 ## Configuration
+
+### Panel Widget
+
+On the panel itself you get:
+
+- **Leading icon** — the live album art thumbnail, a music-note icon, or nothing (configurable)
+- **Scrolling title** — formatted track text that scrolls when it overflows
+- **Hover controls** — previous / play-pause / next appear when you hover (if enabled). Previous and next are shown only when the player supports them and there's room; otherwise just play/pause. The icon/art still opens the popup.
+- **Click anywhere** — opens the media popup (the pointer cursor indicates it's clickable)
 
 ### Media Popup
 
 Click the applet on the panel to open the media popup. It shows:
 
 - **Player selector** — dropdown to choose which player to control when more than one is active
-- **Album art** — rounded art fetched from the player, falls back to a music note icon
+- **Album art** — rounded art fetched from the player, falls back to a music-note icon. **Click it** to open the track's source URL (e.g. the YouTube tab) in your browser.
 - **Track title and artist**
-- **Playback controls** — previous, play/pause, next
+- **Progress bar** — a draggable seek slider with elapsed / total time (shown when the player reports a track duration)
+- **Playback controls** — previous, play/pause, next (previous/next hidden when the player doesn't support them)
 
 Click the gear icon (⚙) to switch to the settings view.
 
@@ -252,19 +269,23 @@ Controls how much horizontal space the applet occupies on the panel.
 - **Default:** 200px
 - Changes are debounced — the panel resizes cleanly after you stop dragging
 
-#### Top Margin
+#### Top / Left / Right Margin
 
-Shifts the panel text vertically to align with other applets if needed.
+Inset the panel content to fine-tune alignment with other applets.
 
-- **Range:** -10px — 20px
-- **Default:** 0px
+| Setting | Range | Default | Effect |
+|---------|-------|---------|--------|
+| **Top Margin** | -10px — 20px | 0px | Shifts the content vertically |
+| **Left Margin** | 0px — 40px | 0px | Padding before the icon/content |
+| **Right Margin** | 0px — 40px | 0px | Padding after the content |
 
 #### Scroll Speed
 
-Controls how fast long text scrolls. Drag the slider left for slower, right for faster.
+Controls how fast long text scrolls. Drag the slider left for slower, right for faster — or all the way down to **Off**.
 
-- **Range:** 1 (slowest, ~300ms/step) — 10 (fastest, ~30ms/step)
+- **Range:** Off, then 1 (slowest, ~300ms/step) — 10 (fastest, ~30ms/step)
 - **Default:** 5
+- **Off (0):** the title stays static, showing whatever fits, until the track changes
 - Lower speeds are easier to read for longer titles
 
 #### Display Format
@@ -278,6 +299,39 @@ Dropdown to select how track metadata is formatted:
 | **Title — Artist** | `Bohemian Rhapsody — Queen` |
 
 > If the player provides no artist, all formats display the title alone.
+
+#### Panel Icon
+
+Dropdown choosing what appears beside the title on the panel:
+
+| Option | Behavior |
+|--------|----------|
+| **Album Art** (default) | Live album-art thumbnail, falling back to a music note when no art is available |
+| **Music Note Icon** | Always the generic music-note icon |
+| **No Icon** | No leading element — the title starts at the panel edge |
+
+#### Album Art Size
+
+Size of the panel album-art thumbnail (and the music-note fallback).
+
+- **Range:** 12px — 48px
+- **Default:** 16px
+
+#### Icon Spacing
+
+Gap between the panel icon/art and the scrolling title.
+
+- **Range:** 0px — 40px
+- **Default:** 6px
+- Only shown when the Panel Icon is not "No Icon"
+
+#### Show Controls on Hover
+
+Toggle whether playback controls appear on the panel when you hover.
+
+- **Default:** On
+- Only available when the Panel Icon is not "No Icon" (the icon/art anchors the popup click)
+- Previous/next buttons are shown only when the player supports them and there's room; otherwise just play/pause
 
 ### Config File Location
 
@@ -309,16 +363,17 @@ Settings are stored via COSMIC's `cosmic-config` system at:
 │                    COSMIC Panel                      │
 │                                                      │
 │   ┌──────────────────────────────────────────────┐  │
-│   │  ♫  Artist — Track Title  ←←← scrolling      │  │
+│   │  🖼  Artist — Track Title  ←←← scrolling     │  │   ← hover: [⏮][⏯][⏭]
 │   └──────────────┬───────────────────────────────┘  │
-│                  │ click                             │
+│                  │ click anywhere                    │
 │   ┌──────────────▼───────────────────────────────┐  │
 │   │  [Player Dropdown ▾]                    [⚙]  │  │
 │   │  ┌──────────────────────────────────────┐    │  │
-│   │  │         🖼 Album Art (rounded)        │    │  │
+│   │  │   🖼 Album Art (click → open URL)     │    │  │
 │   │  └──────────────────────────────────────┘    │  │
 │   │           Track Title                         │  │
 │   │           Artist Name                         │  │
+│   │  ──────●─────────────────  1:23 / 3:45        │  │
 │   │        [⏮]  [⏯]  [⏭]                        │  │
 │   └──────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────┘
@@ -326,8 +381,9 @@ Settings are stored via COSMIC's `cosmic-config` system at:
      Background Subscriptions:
      ┌──────────────────────┐
      │  MPRIS Poller (1s)   │──→ D-Bus session bus
-     │  Scroll Timer        │──→ marquee animation
+     │  Scroll Timer        │──→ marquee animation (skipped when Off / fits)
      │  Config Watcher      │──→ cosmic-config
+     │  Pointer Events      │──→ panel hover detection
      └──────────────────────┘
 ```
 
@@ -364,7 +420,13 @@ cosmic-media-now-playing-applet/
 
 **Debounced panel resizing:** Width slider changes are committed to the panel only after 1.5 seconds of inactivity, sending a single clean resize request rather than many rapid ones that could cause applets to overlap.
 
-**Marquee Scrolling:** Implemented via character-offset windowing on a looping buffer. The scroll subscription is completely disabled when the text fits within the widget, saving CPU cycles.
+**Marquee Scrolling:** Implemented via character-offset windowing on a looping buffer. The scroll subscription is completely disabled when the text fits within the widget — or when scroll speed is set to **Off** — saving CPU cycles.
+
+**Hover controls:** Panel hover is detected through a raw `CursorMoved` / `CursorLeft` event subscription (filtered to the applet's own surface), rather than a `mouse_area` widget — because the applet surface is autosized to exactly the widget, the pointer leaves the *surface* instead of crossing widget bounds, which a `mouse_area`'s hover state doesn't handle reliably. The whole widget is a single button so any click opens the popup, while the nested control buttons capture their own clicks.
+
+**Capability-aware controls:** Previous/next buttons follow the player's MPRIS `CanGoNext` / `CanGoPrevious` properties, so they disappear for sources that can't skip (single streams, the last item in a queue, etc.).
+
+**Seeking:** The progress bar reads `Position` / `mpris:length` and commits scrubs via MPRIS `SetPosition`, shown only when the player advertises a track duration.
 
 ---
 
@@ -388,6 +450,10 @@ The applet hides itself when no track title is available. Some players take a mo
 - For **browsers playing YouTube**, the applet extracts the video ID from the track URL and fetches the thumbnail directly from YouTube's CDN.
 - For **Spotify**, art is fetched via HTTPS from Spotify's CDN.
 - If art still doesn't appear, check that the applet has network access and that the player is exposing `mpris:artUrl`.
+
+### Hover controls don't appear on the panel
+
+The inline hover buttons require **"Show Controls on Hover"** to be enabled (it is by default) **and** the **Panel Icon** to be something other than "No Icon" — the icon/art is what anchors the popup click when the controls take over the rest of the widget. Previous/next also only show when the player supports skipping and there's enough widget width; otherwise you'll see just play/pause.
 
 ### Applet doesn't appear in the COSMIC Settings applet list
 
@@ -432,12 +498,22 @@ Example for Spanish (`i18n/es/cosmic_media_now_playing_applet.ftl`):
 no-media = Sin reproducción
 widget-width = Ancho del widget
 scroll-speed = Velocidad de desplazamiento
+scroll-off = Desactivado
 display-format = Formato de visualización
 format-title-only = Solo título
 format-artist-title = Artista — Título
 format-title-artist = Título — Artista
 app-title = Reproduciendo ahora
 top-margin = Margen superior
+left-margin = Margen izquierdo
+right-margin = Margen derecho
+panel-icon = Icono del panel
+panel-icon-album-art = Carátula
+panel-icon-music-note = Icono de nota musical
+panel-icon-none = Sin icono
+art-size = Tamaño de la carátula
+icon-spacing = Espaciado del icono
+hover-controls = Mostrar controles al pasar el cursor
 ```
 
 ---
