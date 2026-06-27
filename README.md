@@ -9,7 +9,15 @@
 </p>
 
 <p align="center">
-  <img src="resources/screenshot.png" alt="Cosmic Media Now Playing Applet Screenshot" width="800">
+  <img src="resources/Screenshot_2026-06-27_15-36-36.png" alt="Cosmic Media Now Playing Applet Screenshot 1" width="800">
+</p>
+
+<p align="center">
+  <img src="resources/Screenshot_2026-06-27_15-36-50.png" alt="Cosmic Media Now Playing Applet Screenshot 2" width="800">
+</p>
+
+<p align="center">
+  <img src="resources/Screenshot_2026-06-27_15-37-07.png" alt="Cosmic Media Now Playing Applet Screenshot 3" width="800">
 </p>
 
 <p align="center">
