@@ -128,6 +128,20 @@ pub struct PlayerInfo {
     pub playback_status: String,
     /// Current playback position in microseconds (0 if unknown).
     pub position_us: i64,
+    /// Whether the player advertises support for skipping to the next track.
+    pub can_go_next: bool,
+    /// Whether the player advertises support for skipping to the previous track.
+    pub can_go_previous: bool,
+}
+
+/// Read a boolean property from an MPRIS player proxy, returning `None` when the
+/// property is absent or not a boolean.
+async fn read_bool_property(player_proxy: &zbus::proxy::Proxy<'_>, name: &str) -> Option<bool> {
+    player_proxy
+        .get_property::<zbus::zvariant::OwnedValue>(name)
+        .await
+        .ok()
+        .and_then(|v| <bool as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
 }
 
 /// Find all active MPRIS media players and return their information.
@@ -260,12 +274,20 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
             .and_then(|v| <i64 as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
             .unwrap_or(0);
 
+        // Whether the player supports skipping forward/backward. Default to true
+        // when the property is missing, since the spec marks these as required.
+        let can_go_next = read_bool_property(&player_proxy, "CanGoNext").await.unwrap_or(true);
+        let can_go_previous =
+            read_bool_property(&player_proxy, "CanGoPrevious").await.unwrap_or(true);
+
         players.push(PlayerInfo {
             bus_name,
             identity,
             metadata,
             playback_status,
             position_us,
+            can_go_next,
+            can_go_previous,
         });
     }
 

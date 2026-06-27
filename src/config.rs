@@ -72,6 +72,9 @@ pub struct NowPlayingConfig {
     pub panel_icon: PanelIcon,
     /// Size in pixels of the album-art thumbnail in the panel (12..=48).
     pub panel_art_size: u32,
+    /// Show playback control buttons in the panel while hovering. Only takes
+    /// effect when `panel_icon` is not `PanelIcon::None`.
+    pub show_hover_controls: bool,
 }
 
 impl Default for NowPlayingConfig {
@@ -86,6 +89,7 @@ impl Default for NowPlayingConfig {
             selected_player: None,
             panel_icon: PanelIcon::default(),
             panel_art_size: 16,
+            show_hover_controls: true,
         }
     }
 }

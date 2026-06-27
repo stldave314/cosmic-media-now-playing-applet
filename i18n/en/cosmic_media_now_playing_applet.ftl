@@ -14,3 +14,4 @@ panel-icon-none = No Icon
 left-margin = Left Margin
 right-margin = Right Margin
 art-size = Album Art Size
+hover-controls = Show Controls on Hover

@@ -28,6 +28,10 @@ const ROW_SPACING: f32 = 6.0;
 /// available text area so short titles are not clipped by the container edge.
 const ICON_AREA_WIDTH: f32 = 22.0; // icon 16px + row spacing 6px
 
+/// Approximate width in pixels of a single panel playback-control button,
+/// including its spacing. Used to decide whether all three controls fit.
+const CONTROL_BUTTON_WIDTH: f32 = 34.0;
+
 /// Defines which view the popup should currently display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupState {
@@ -90,6 +94,12 @@ pub struct NowPlaying {
     seek_value: f64,
     /// Whether the seek slider is currently being dragged by the user.
     seeking: bool,
+    /// Whether the pointer is currently hovering over the panel applet.
+    panel_hovered: bool,
+    /// Whether the active player supports skipping to the next track.
+    can_go_next: bool,
+    /// Whether the active player supports skipping to the previous track.
+    can_go_previous: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,6 +146,9 @@ impl Default for NowPlaying {
             track_url: None,
             seek_value: 0.0,
             seeking: false,
+            panel_hovered: false,
+            can_go_next: true,
+            can_go_previous: true,
         }
     }
 }
@@ -155,9 +168,9 @@ impl NowPlaying {
         self.scroll_offset = 0;
     }
 
-    /// Maximum number of characters that fit in the panel text area, accounting
-    /// for the leading icon's footprint and horizontal margins when shown.
-    fn max_visible_chars(&self) -> usize {
+    /// Pixels available for content beside the leading icon, after subtracting
+    /// the icon's footprint and the horizontal margins.
+    fn available_panel_width(&self) -> f32 {
         // Icon footprint = icon width + the 6px row spacing.
         let icon_area = match self.config.panel_icon {
             PanelIcon::None => 0.0,
@@ -165,8 +178,21 @@ impl NowPlaying {
             PanelIcon::AlbumArt => self.config.panel_art_size as f32 + ROW_SPACING,
         };
         let margins = (self.config.left_margin.max(0) + self.config.right_margin.max(0)) as f32;
-        let available = (self.config.widget_width as f32 - icon_area - margins).max(0.0);
-        (available / APPROX_CHAR_WIDTH) as usize
+        (self.config.widget_width as f32 - icon_area - margins).max(0.0)
+    }
+
+    /// Maximum number of characters that fit in the panel text area, accounting
+    /// for the leading icon's footprint and horizontal margins when shown.
+    fn max_visible_chars(&self) -> usize {
+        (self.available_panel_width() / APPROX_CHAR_WIDTH) as usize
+    }
+
+    /// Whether hover controls should be shown right now: enabled in config, an
+    /// icon is present to anchor the popup click, and the pointer is hovering.
+    fn show_panel_controls(&self) -> bool {
+        self.config.show_hover_controls
+            && self.config.panel_icon != PanelIcon::None
+            && self.panel_hovered
     }
 
     /// Returns the visible portion of the display text for the marquee effect.
@@ -240,9 +266,6 @@ impl NowPlaying {
 
         let artist = widget::text::body(self.track_artist.clone());
 
-        let btn_prev = widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
-            .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous));
-
         let play_pause_icon = if self.playback_status == "Playing" {
             "media-playback-pause-symbolic"
         } else {
@@ -251,15 +274,23 @@ impl NowPlaying {
         let btn_play_pause = widget::button::icon(widget::icon::from_name(play_pause_icon))
             .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause));
 
-        let btn_next = widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
-            .on_press(Message::PlayerCommand(mpris::MprisCommand::Next));
-
-        let controls = widget::row::with_capacity(3)
+        // Only show skip buttons the active player supports.
+        let mut controls = widget::row::with_capacity(3)
             .spacing(12)
-            .push(btn_prev)
-            .push(btn_play_pause)
-            .push(btn_next)
             .align_y(Vertical::Center);
+        if self.can_go_previous {
+            controls = controls.push(
+                widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous)),
+            );
+        }
+        controls = controls.push(btn_play_pause);
+        if self.can_go_next {
+            controls = controls.push(
+                widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Next)),
+            );
+        }
 
         // Progress / seek bar — only shown when the player reports a known duration.
         let progress_bar: Option<Element<'_, Message>> = if self.length_us > 0 {
@@ -440,7 +471,21 @@ impl NowPlaying {
             }),
         );
 
-        let content = widget::column::with_capacity(17)
+        // Hover controls only make sense with a leading icon to anchor the
+        // popup click, so the toggle is disabled when "No Icon" is selected.
+        // Switch first, then a small margin, then the label.
+        let hover_toggle = widget::row::with_capacity(2)
+            .spacing(12)
+            .align_y(Vertical::Center)
+            .push(
+                widget::toggler(self.config.show_hover_controls).on_toggle_maybe(
+                    (self.config.panel_icon != PanelIcon::None)
+                        .then_some(Message::SetHoverControls),
+                ),
+            )
+            .push(widget::text::body(fl!("hover-controls")));
+
+        let content = widget::column::with_capacity(18)
             .spacing(12)
             .padding(16)
             .push(
@@ -465,7 +510,8 @@ impl NowPlaying {
             .push(panel_icon_label)
             .push(panel_icon_dropdown)
             .push(art_size_label)
-            .push(art_size_slider);
+            .push(art_size_slider)
+            .push(hover_toggle);
 
         self.core.applet.popup_container(content).into()
     }
@@ -510,6 +556,13 @@ pub enum Message {
     SetPanelIcon(PanelIcon),
     /// User changed the panel album-art thumbnail size.
     SetPanelArtSize(f32),
+    /// User toggled whether playback controls appear on panel hover.
+    SetHoverControls(bool),
+    /// Pointer moved over a surface (carries the surface's window id). A move on
+    /// the applet's main surface means the pointer is hovering the panel.
+    PanelPointerMoved(Id),
+    /// Pointer left a surface (carries the surface's window id).
+    PanelPointerLeft(Id),
     /// Configuration was changed externally (e.g. another instance or file edit).
     ConfigChanged(NowPlayingConfig),
     /// Open the track URL in the system browser.
@@ -622,38 +675,101 @@ impl cosmic::Application for NowPlaying {
             PanelIcon::MusicNote => Some(music_note()),
             PanelIcon::None => None,
         };
-        let text = widget::text::body(self.visible_text())
-            .wrapping(cosmic::iced::widget::text::Wrapping::None);
-
-        let mut content = widget::row::with_capacity(2);
-        if let Some(leading) = leading {
-            content = content.push(leading);
-        }
-        let content = content
-            .push(
-                widget::container(text)
-                    .width(Length::Fill)
-                    .clip(true),
-            )
-            .spacing(ROW_SPACING)
-            .align_y(Vertical::Center);
-
         // padding order is [top, right, bottom, left].
-        let content = widget::container(content).padding([
+        let padding = [
             self.config.top_margin.max(0) as u16,
             self.config.right_margin.max(0) as u16,
             0,
             self.config.left_margin.max(0) as u16,
-        ]);
+        ];
+        let widget_width = self.config.widget_width as f32;
+        let panel_height = panel_height as f32;
 
+        let content_row: Element<'_, Message> = if self.show_panel_controls() {
+            // Hovering with controls enabled: the leading icon sits next to the
+            // playback controls. The control buttons capture their own clicks;
+            // everything else falls through to the outer button (opens the popup).
+            // Only offer skip buttons the player supports, and only when there's
+            // room — otherwise fall back to just play/pause.
+            let leading_icon = leading.expect("controls require a panel icon");
+            let want_prev = self.can_go_previous;
+            let want_next = self.can_go_next;
+            let desired = 1 + want_prev as usize + want_next as usize;
+            let show_skips =
+                self.available_panel_width() >= desired as f32 * CONTROL_BUTTON_WIDTH;
+            let play_pause_icon = if self.playback_status == "Playing" {
+                "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            };
+            let mut controls = widget::row::with_capacity(desired)
+                .spacing(4)
+                .align_y(Vertical::Center);
+            if show_skips && want_prev {
+                controls = controls.push(
+                    widget::button::icon(
+                        widget::icon::from_name("media-skip-backward-symbolic").size(16),
+                    )
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous)),
+                );
+            }
+            controls = controls.push(
+                widget::button::icon(widget::icon::from_name(play_pause_icon).size(16))
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause)),
+            );
+            if show_skips && want_next {
+                controls = controls.push(
+                    widget::button::icon(
+                        widget::icon::from_name("media-skip-forward-symbolic").size(16),
+                    )
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Next)),
+                );
+            }
+
+            widget::row::with_capacity(2)
+                .push(leading_icon)
+                .push(widget::container(controls).center_x(Length::Fill))
+                .spacing(ROW_SPACING)
+                .align_y(Vertical::Center)
+                .into()
+        } else {
+            // Default: leading icon + scrolling track text.
+            let text = widget::text::body(self.visible_text())
+                .wrapping(cosmic::iced::widget::text::Wrapping::None);
+
+            let mut row = widget::row::with_capacity(2);
+            if let Some(leading) = leading {
+                row = row.push(leading);
+            }
+            row.push(widget::container(text).width(Length::Fill).clip(true))
+                .spacing(ROW_SPACING)
+                .align_y(Vertical::Center)
+                .into()
+        };
+
+        // Fill the button's fixed height and center vertically so the (taller)
+        // hover controls stay within the panel. The button itself uses zero
+        // padding — its default 5px would otherwise push content past the fixed
+        // panel height. Horizontal/vertical insets come from `padding` (margins).
+        let content = widget::container(content_row)
+            .width(Length::Fill)
+            .center_y(Length::Fill)
+            .padding(padding);
+
+        // One AppletIcon button makes the whole widget clickable (opening the
+        // popup) and shows the pointer cursor over it. `on_press` (rather than
+        // `on_press_down`) is what enables that pointer affordance. Nested
+        // control buttons capture their own clicks, so they act independently
+        // and don't also toggle the popup. Hover is detected via a raw-event
+        // subscription (see `subscription`), so no mouse_area wrapper is needed.
         let button = widget::button::custom(content)
-            .width(Length::Fixed(self.config.widget_width as f32))
-            .height(Length::Fixed(panel_height as f32))
-            .on_press_down(Message::TogglePopup)
+            .width(Length::Fixed(widget_width))
+            .height(Length::Fixed(panel_height))
+            .padding(0)
+            .on_press(Message::TogglePopup)
             .class(cosmic::theme::Button::AppletIcon);
 
-        widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone())
-            .into()
+        widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into()
     }
 
     /// The popup window containing either media controls or configuration settings.
@@ -677,6 +793,27 @@ impl cosmic::Application for NowPlaying {
         // 3. Scroll timer — only active when the text overflows.
         if self.needs_scroll() {
             subs.push(Subscription::run_with(self.config.scroll_speed, scroll_timer_stream));
+        }
+
+        // 4. Hover detection for the panel controls. The applet surface is
+        // autosized to exactly the widget, so the pointer enters/leaves the
+        // *surface* rather than crossing widget bounds — `mouse_area`'s own
+        // on_enter/on_exit are unreliable here (its internal hover state sticks
+        // after the first CursorLeft). Drive hover from raw events instead: on
+        // Wayland, surface-enter arrives as CursorMoved and surface-leave as
+        // CursorLeft. The window id lets us ignore moves over the popup.
+        if self.config.show_hover_controls && self.config.panel_icon != PanelIcon::None {
+            subs.push(cosmic::iced::event::listen_with(|event, _status, window| {
+                match event {
+                    cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::CursorMoved { .. }) => {
+                        Some(Message::PanelPointerMoved(window))
+                    }
+                    cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::CursorLeft) => {
+                        Some(Message::PanelPointerLeft(window))
+                    }
+                    _ => None,
+                }
+            }));
         }
 
         Subscription::batch(subs)
@@ -755,16 +892,18 @@ impl cosmic::Application for NowPlaying {
                 self.players = players;
 
                 let (title, artist, art_url, art_bytes, status, has_player, active_bus,
-                     new_length_us, new_track_id, new_position_us, new_track_url) =
+                     new_length_us, new_track_id, new_position_us, new_track_url,
+                     new_can_next, new_can_prev) =
                     if let Some(p) = active_player {
                         let bus = p.bus_name.clone();
                         (p.metadata.title, p.metadata.artist, p.metadata.art_url,
                          p.metadata.art_bytes, p.playback_status, true, Some(bus),
                          p.metadata.length_us, p.metadata.track_id, p.position_us,
-                         p.metadata.track_url)
+                         p.metadata.track_url, p.can_go_next, p.can_go_previous)
                     } else {
                         (String::new(), String::new(), None, None,
-                         "Stopped".to_string(), false, None, 0i64, String::new(), 0i64, None)
+                         "Stopped".to_string(), false, None, 0i64, String::new(), 0i64, None,
+                         true, true)
                     };
 
                 let changed = self.track_title != title
@@ -775,6 +914,8 @@ impl cosmic::Application for NowPlaying {
 
                 self.playback_status = status;
                 self.active_player_bus = active_bus;
+                self.can_go_next = new_can_next;
+                self.can_go_previous = new_can_prev;
 
                 self.track_url = new_track_url;
 
@@ -818,8 +959,10 @@ impl cosmic::Application for NowPlaying {
                 if let Some(p) = self.players.iter().find(|p| p.bus_name == selected_bus).cloned() {
                     let changed = self.track_title != p.metadata.title || self.track_artist != p.metadata.artist;
                     let art_changed = self.art_url != p.metadata.art_url;
-                    
+
                     self.playback_status = p.playback_status.clone();
+                    self.can_go_next = p.can_go_next;
+                    self.can_go_previous = p.can_go_previous;
                     
                     if changed || !self.has_player {
                         self.track_title = p.metadata.title;
@@ -899,6 +1042,25 @@ impl cosmic::Application for NowPlaying {
                 // The art footprint affects the available text width.
                 self.scroll_offset = 0;
                 self.save_config();
+            }
+            Message::SetHoverControls(enabled) => {
+                self.config.show_hover_controls = enabled;
+                if !enabled {
+                    self.panel_hovered = false;
+                }
+                self.save_config();
+            }
+            Message::PanelPointerMoved(window) => {
+                // A pointer move on the applet's own surface means we're hovering
+                // the panel (the surface is autosized to exactly the widget).
+                if Some(window) == self.core.main_window_id() {
+                    self.panel_hovered = true;
+                }
+            }
+            Message::PanelPointerLeft(window) => {
+                if Some(window) == self.core.main_window_id() {
+                    self.panel_hovered = false;
+                }
             }
             Message::SwitchPopupView(state) => {
                 self.popup_state = state;
