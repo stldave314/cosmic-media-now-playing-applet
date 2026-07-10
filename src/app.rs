@@ -377,7 +377,7 @@ impl NowPlaying {
         ));
         let width_slider =
             widget::slider(100.0..=500.0, self.slider_width as f32, Message::SetWidth)
-                .step(10.0);
+                .step(10.0_f32);
 
         let speed_label = widget::text::body(if self.config.scroll_speed == 0 {
             format!("{}: {}", fl!("scroll-speed"), fl!("scroll-off"))
@@ -388,7 +388,7 @@ impl NowPlaying {
             0.0..=10.0,
             self.config.scroll_speed as f32,
             |v| Message::SetScrollSpeed(v as u32),
-        ).step(1.0);
+        ).step(1.0_f32);
 
         let format_label = widget::text::body(fl!("display-format"));
         let format_options: Vec<String> = vec![
@@ -418,7 +418,7 @@ impl NowPlaying {
         ));
         let margin_slider =
             widget::slider(-10.0..=20.0, self.config.top_margin as f32, Message::SetTopMargin)
-                .step(1.0);
+                .step(1.0_f32);
 
         let left_margin_label = widget::text::body(format!(
             "{}: {}px",
@@ -427,7 +427,7 @@ impl NowPlaying {
         ));
         let left_margin_slider =
             widget::slider(0.0..=40.0, self.config.left_margin as f32, Message::SetLeftMargin)
-                .step(1.0);
+                .step(1.0_f32);
 
         let right_margin_label = widget::text::body(format!(
             "{}: {}px",
@@ -436,7 +436,7 @@ impl NowPlaying {
         ));
         let right_margin_slider =
             widget::slider(0.0..=40.0, self.config.right_margin as f32, Message::SetRightMargin)
-                .step(1.0);
+                .step(1.0_f32);
 
         let art_size_label = widget::text::body(format!(
             "{}: {}px",
@@ -448,7 +448,7 @@ impl NowPlaying {
             self.config.panel_art_size as f32,
             Message::SetPanelArtSize,
         )
-        .step(1.0);
+        .step(1.0_f32);
 
         // Gap between the icon/art and the title — only relevant when an icon
         // is shown, so omit it entirely under "No Icon".
@@ -467,7 +467,7 @@ impl NowPlaying {
                             self.config.icon_spacing as f32,
                             Message::SetIconSpacing,
                         )
-                        .step(1.0),
+                        .step(1.0_f32),
                     )
                     .into()
             });

@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-media-now-playing-applet"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64",
  "futures-util",
