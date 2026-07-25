@@ -5,18 +5,56 @@
   <project_license>GPL-3.0</project_license>
   <name>Now Playing</name>
   <summary>A COSMIC panel applet that displays the currently playing media track</summary>
+
+  <!-- Links this component to the installed .desktop file. Without it a
+       desktop-application component is invalid, and software centres can't
+       reliably match the metadata to the installed application. -->
+  <launchable type="desktop-id">com.github.cosmic_media_now_playing_applet.desktop</launchable>
+
   <description>
     <p>
-      Shows the currently playing media track name on your COSMIC desktop panel using
-      MPRIS. Supports configurable widget width, scrolling for long titles, and multiple
-      display formats.
+      Shows the currently playing media track on your COSMIC desktop panel using MPRIS.
+      Displays album art and the track title, with inline playback controls on hover and
+      a popup offering a seekable progress bar, playback controls, a player selector, and
+      a one-shot "pause before playing next track" switch.
+    </p>
+    <p>
+      Works with any MPRIS-compatible player, including Spotify, web players in Firefox
+      and Chromium, VLC, Rhythmbox, and Amberol.
     </p>
   </description>
+
   <categories>
     <category>System</category>
+    <category>Audio</category>
   </categories>
-  <url type="homepage">https://github.com/user/cosmic-media-now-playing-applet</url>
+
+  <keywords>
+    <keyword>media</keyword>
+    <keyword>music</keyword>
+    <keyword>mpris</keyword>
+    <keyword>now playing</keyword>
+    <keyword>applet</keyword>
+  </keywords>
+
+  <url type="homepage">https://github.com/stldave314/cosmic-media-now-playing-applet</url>
+  <url type="bugtracker">https://github.com/stldave314/cosmic-media-now-playing-applet/issues</url>
+
+  <developer id="io.github.stldave314">
+    <name>stldave314</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
   <provides>
     <binary>cosmic-media-now-playing-applet</binary>
   </provides>
+
+  <!-- Version history. Software centres compare the newest entry here against
+       what's installed, so this must match the packaged version — the packaging
+       targets in install.sh rewrite it from Cargo.toml rather than relying on
+       it being updated by hand. -->
+  <releases>
+    <release version="0.10.0" date="2026-07-25"/>
+  </releases>
 </component>

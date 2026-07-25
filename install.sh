@@ -24,6 +24,21 @@ CONFIG_DIR="${HOME}/.config/cosmic/${APP_ID}"
 # Package version, read from Cargo.toml.
 get_version() { grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'; }
 
+# Write resources/app.metainfo.xml to $1 with its newest <release> entry set to
+# the version in Cargo.toml and today's date.
+#
+# Software centres compare that entry against what's installed to decide whether
+# a package is an upgrade, so a stale value makes a newer package look like the
+# installed one. Generating it keeps Cargo.toml the single source of truth
+# instead of relying on the file being hand-edited each release.
+stage_metainfo() {
+    local dest="$1" ver today
+    ver="$(get_version)"
+    today="$(date +%Y-%m-%d)"
+    sed -E "s|<release version=\"[^\"]*\" date=\"[^\"]*\"/>|<release version=\"${ver}\" date=\"${today}\"/>|" \
+        resources/app.metainfo.xml > "${dest}"
+}
+
 # ── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -112,7 +127,8 @@ do_install() {
     sudo install -Dm0644 resources/app.desktop "${DESKTOP_DST}"
 
     info "AppStream metadata → ${APPDATA_DST}"
-    sudo install -Dm0644 resources/app.metainfo.xml "${APPDATA_DST}"
+    stage_metainfo "${CARGO_TARGET_DIR}/app.metainfo.xml"
+    sudo install -Dm0644 "${CARGO_TARGET_DIR}/app.metainfo.xml" "${APPDATA_DST}"
 
     info "Icon → ${ICON_DST}"
     sudo install -Dm0644 resources/icon.svg "${ICON_DST}"
@@ -301,7 +317,8 @@ do_package_tar() {
     step "Assembling tarball..."
     mkdir -p "${stage}/resources"
     install -Dm0755 "${BIN_SRC}" "${stage}/${APP_NAME}"
-    cp resources/app.desktop resources/app.metainfo.xml resources/icon.svg "${stage}/resources/"
+    cp resources/app.desktop resources/icon.svg "${stage}/resources/"
+    stage_metainfo "${stage}/resources/app.metainfo.xml"
     cp install.sh "${stage}/"
     [ -f LICENSE ] && cp LICENSE "${stage}/"
     [ -f README.md ] && cp README.md "${stage}/"
@@ -318,7 +335,8 @@ do_package_deb() {
     fi
     step "Building .deb package..."
     info "Release build — diagnostic logging forced OFF"
-    mkdir -p "${DIST_DIR}"
+    mkdir -p "${DIST_DIR}" "${CARGO_TARGET_DIR}"
+    stage_metainfo "${CARGO_TARGET_DIR}/app.metainfo.xml"
     # cargo-deb runs its own build, so the feature has to be passed through.
     cargo deb -- --features release-build
     cp "${CARGO_TARGET_DIR}/debian/"*.deb "${DIST_DIR}/"
@@ -333,7 +351,8 @@ do_package_rpm() {
     fi
     do_release_build
     step "Building .rpm package..."
-    mkdir -p "${DIST_DIR}"
+    mkdir -p "${DIST_DIR}" "${CARGO_TARGET_DIR}"
+    stage_metainfo "${CARGO_TARGET_DIR}/app.metainfo.xml"
     cargo generate-rpm
     cp "${CARGO_TARGET_DIR}/generate-rpm/"*.rpm "${DIST_DIR}/"
     success "Created .rpm in ${DIST_DIR}/"

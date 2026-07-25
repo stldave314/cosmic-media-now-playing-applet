@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-media-now-playing-applet"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 license = "GPL-3.0"
 description = "A COSMIC DE panel applet that displays the currently playing media track using MPRIS"
@@ -59,7 +59,7 @@ seekable progress bar, hover controls, and a configurable panel display."""
 assets = [
     ["target/release/cosmic-media-now-playing-applet", "usr/bin/", "755"],
     ["resources/app.desktop", "usr/share/applications/com.github.cosmic_media_now_playing_applet.desktop", "644"],
-    ["resources/app.metainfo.xml", "usr/share/metainfo/com.github.cosmic_media_now_playing_applet.metainfo.xml", "644"],
+    ["target/app.metainfo.xml", "usr/share/metainfo/com.github.cosmic_media_now_playing_applet.metainfo.xml", "644"],
     ["resources/icon.svg", "usr/share/icons/hicolor/scalable/apps/com.github.cosmic_media_now_playing_applet.svg", "644"],
 ]
 
@@ -69,6 +69,6 @@ assets = [
 assets = [
     { source = "target/release/cosmic-media-now-playing-applet", dest = "/usr/bin/cosmic-media-now-playing-applet", mode = "755" },
     { source = "resources/app.desktop", dest = "/usr/share/applications/com.github.cosmic_media_now_playing_applet.desktop", mode = "644" },
-    { source = "resources/app.metainfo.xml", dest = "/usr/share/metainfo/com.github.cosmic_media_now_playing_applet.metainfo.xml", mode = "644" },
+    { source = "target/app.metainfo.xml", dest = "/usr/share/metainfo/com.github.cosmic_media_now_playing_applet.metainfo.xml", mode = "644" },
     { source = "resources/icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.github.cosmic_media_now_playing_applet.svg", mode = "644" },
 ]
