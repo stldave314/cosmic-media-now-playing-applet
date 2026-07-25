@@ -16,7 +16,20 @@ env:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Built natively on each architecture rather than cross-compiled: libcosmic
+    # needs a pile of system libraries (fontconfig, freetype, xkbcommon, gbm,
+    # seat, udev …), and sourcing ARM64 versions of those on an x86_64 host is
+    # far more fragile than just using an ARM64 runner. Free for public repos.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    name: release (${{ matrix.arch }})
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +50,9 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          # Separate caches per architecture; artifacts aren't interchangeable.
+          key: ${{ matrix.arch }}
 
       - name: Install packaging tools
         run: cargo install cargo-deb cargo-generate-rpm

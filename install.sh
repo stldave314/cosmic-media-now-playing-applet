@@ -277,9 +277,12 @@ do_clean() {
 # so it can be installed with `BIN_SRC=./<binary> ./install.sh install`.
 do_package_tar() {
     do_release_build
-    local ver name stage
+    local ver arch name stage
     ver="$(get_version)"
-    name="${APP_NAME}-${ver}-x86_64-linux"
+    # Name by the machine actually being built on (x86_64, aarch64, …) so
+    # multi-architecture releases don't collide.
+    arch="$(uname -m)"
+    name="${APP_NAME}-${ver}-${arch}-linux"
     stage="${DIST_DIR}/${name}"
 
     step "Assembling tarball..."
