@@ -36,6 +36,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
+- [Legal](#legal)
 
 ---
 
@@ -400,6 +401,18 @@ update-error-parse = No se pudo interpretar la versión.
 ## License
 
 Licensed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
+
+## Legal
+
+**No affiliation.** This is an independent, community-built applet. It is not affiliated with, endorsed by, sponsored by, or otherwise associated with System76, Inc., nor with any media player or streaming service it interoperates with.
+
+**Trademarks.** COSMIC™ and System76® are trademarks or registered trademarks of System76, Inc. Other product, service, and company names referenced here — including Spotify, YouTube Music, Firefox, Chromium, VLC, and others — are trademarks or registered trademarks of their respective owners. All such marks are used descriptively, to identify the software this applet works with, and their use implies no affiliation with or endorsement by their owners.
+
+**No warranty — use at your own risk.** This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the implied warranties of merchantability, fitness for a particular purpose, and non-infringement. The authors and copyright holders accept no liability for any claim, damages, or other loss arising from its use. Sections 15 and 16 of the [GNU GPL v3](LICENSE) contain the governing disclaimer of warranty and limitation of liability; nothing here modifies or supersedes them.
+
+**Media and content.** The applet only reads metadata that media players publish over the standard [MPRIS D-Bus interface](https://specifications.freedesktop.org/mpris-spec/latest/) and displays artwork those players make available locally or by public URL. It does not download, cache for redistribution, decrypt, or circumvent access controls on any media, and it provides no playback capability of its own. You remain responsible for complying with the terms of the media services, players, and content you use it with.
+
+**Screenshots.** Album art shown in this README is a placeholder graphic rather than real cover art; see [Screenshots](#screenshots).
 
 ## Acknowledgments
 
