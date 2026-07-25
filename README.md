@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="resources/screenshot-popup.png" alt="The applet on the COSMIC panel with hover controls, and its popup showing album art, seek bar, playback controls, and the pause-before-next-track switch" width="460">
+  <img src="resources/screenshot-popup.png" alt="The applet on the COSMIC panel with hover controls, and its popup showing album art (placeholder graphic), seek bar, playback controls, and the pause-before-next-track switch" width="460">
 </p>
 
 ---
@@ -51,10 +51,12 @@ It's **pure Rust** — no C D-Bus bindings — and every setting persists across
 
 ## Screenshots
 
+> **Note:** the album art in these screenshots is a placeholder graphic, substituted for the real cover art to avoid redistributing copyrighted images. The applet displays whatever artwork your player provides. Surrounding panel applets are blurred for privacy.
+
 On the panel, the applet sits inline with your other applets — album art thumbnail plus the track title, which **scrolls as a marquee** when it's too long to fit:
 
 <p align="center">
-  <img src="resources/screenshot-panel.png" alt="The applet on the COSMIC panel showing the album art thumbnail and a long track title scrolling as a marquee" width="820">
+  <img src="resources/screenshot-panel.png" alt="The applet on the COSMIC panel showing the album art thumbnail (placeholder graphic) and a long track title scrolling as a marquee" width="820">
 </p>
 
 The hero image above shows the same widget with its **inline hover controls** (previous / play-pause / next) alongside the **media popup** — album art, title and artist, the seekable progress bar with elapsed and total time, playback controls, and the *pause before playing next track* switch.
