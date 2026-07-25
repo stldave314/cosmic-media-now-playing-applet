@@ -157,6 +157,14 @@ do_uninstall() {
 
     if [ "${removed}" -gt 0 ]; then
         success "Uninstall complete (${removed} files removed)."
+        # Removing the binary doesn't stop the running applet: the panel spawned
+        # it at startup and Linux keeps the unlinked inode alive, so it stays on
+        # the panel until the panel is restarted. Skipped by `reinstall`, which
+        # reloads once at the end instead.
+        if [ -z "${SKIP_UNINSTALL_RELOAD:-}" ]; then
+            echo ""
+            do_reload_panel
+        fi
     else
         warn "Nothing was installed — nothing to remove."
     fi
@@ -220,7 +228,9 @@ do_reload_panel() {
 do_reinstall() {
     step "Reinstalling ${APP_NAME}..."
     echo ""
-    do_uninstall
+    # do_install reloads the panel at the end, so skip the uninstall's reload
+    # rather than restarting the panel twice in one run.
+    SKIP_UNINSTALL_RELOAD=1 do_uninstall
     separator
     do_build
     separator
