@@ -4,7 +4,7 @@ use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
 use crate::constants::{
     APPROX_CHAR_WIDTH, CONTROL_BUTTON_WIDTH, MPRIS_POLL_INTERVAL_MS, MUSIC_NOTE_SIZE,
     PROGRESS_TICK_MS, SCROLL_GAP, SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS,
-    SNAP_ART_PACKAGES, UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
+    SNAP_ART_PACKAGES, TEXT_OVERDRAW_CHARS, UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
 use crate::fl;
 use crate::mpris;
@@ -259,7 +259,13 @@ impl NowPlaying {
         let total_chars: usize = self.display_text.chars().count() + SCROLL_GAP.chars().count();
         let offset = self.scroll_offset % total_chars;
 
-        looping.chars().skip(offset).take(max_chars).collect()
+        // Hand over more than the estimate suggests and let the container's clip
+        // trim it at the true pixel edge, so the title fills the whole width.
+        looping
+            .chars()
+            .skip(offset)
+            .take(max_chars + TEXT_OVERDRAW_CHARS)
+            .collect()
     }
 
     /// Whether the text overflows and needs scrolling.

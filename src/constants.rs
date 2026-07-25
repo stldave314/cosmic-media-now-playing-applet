@@ -13,8 +13,21 @@
 /// The separator inserted between repetitions of scrolling text.
 pub const SCROLL_GAP: &str = "    ·    ";
 
-/// Approximate character width in pixels, used to estimate text overflow.
+/// Approximate character width in pixels, used only to decide *whether* the
+/// title overflows and needs scrolling. Deliberately on the generous side:
+/// over-estimating makes the applet scroll a title that might just have fitted,
+/// which is far less bad than not scrolling one that doesn't fit and silently
+/// hiding its end.
 pub const APPROX_CHAR_WIDTH: f32 = 8.0;
+
+/// Extra characters handed to the panel text beyond the estimated fit.
+///
+/// The text container clips at its real pixel boundary, so supplying surplus
+/// characters lets it fill the full width exactly and the estimate above only
+/// has to be in the right ballpark. Without this the title stops wherever the
+/// estimate under-counts — which it always does for a proportional font —
+/// leaving visible dead space before the edge of the applet.
+pub const TEXT_OVERDRAW_CHARS: usize = 16;
 
 /// Size in pixels of the music-note fallback icon in the panel.
 pub const MUSIC_NOTE_SIZE: f32 = 16.0;

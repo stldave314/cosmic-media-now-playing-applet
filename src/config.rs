@@ -77,7 +77,9 @@ impl Default for NowPlayingConfig {
             scroll_speed: 5,
             display_format: DisplayFormat::default(),
             top_margin: 0,
-            left_margin: 0,
+            // A little inset by default so the icon isn't flush against the
+            // neighbouring applet.
+            left_margin: 5,
             right_margin: 0,
             selected_player: None,
             panel_icon: PanelIcon::default(),

@@ -236,7 +236,7 @@ Below the playback controls is a switch that arms a **one-shot stop**: the curre
 |---------|-----------------|---------|-------|
 | **Widget Width** | 100 – 500 px | 200 px | Debounced — the panel resizes cleanly after you stop dragging |
 | **Top Margin** | -10 – 20 px | 0 px | Shifts content vertically |
-| **Left Margin** | 0 – 40 px | 0 px | Padding before the icon/content |
+| **Left Margin** | 0 – 40 px | 5 px | Padding before the icon/content |
 | **Right Margin** | 0 – 40 px | 0 px | Padding after the content |
 | **Scroll Speed** | Off, 1 – 10 | 5 | 1 ≈ 300 ms/step, 10 ≈ 30 ms/step. **Off** keeps the visible portion static until the track changes |
 | **Display Format** | Title Only · Artist — Title · Title — Artist | Artist — Title | Falls back to title alone when the player reports no artist |
