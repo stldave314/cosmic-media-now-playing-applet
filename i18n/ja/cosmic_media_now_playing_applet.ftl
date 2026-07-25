@@ -27,5 +27,4 @@ update-uptodate = 最新です (v{ $version })
 update-available = 更新があります: v{ $remote } (現在: v{ $local })
 update-error-client = HTTP クライアントを作成できませんでした。
 update-error-connect = GitHub に接続できませんでした。
-update-error-read = 応答を読み取れませんでした。
 update-error-parse = バージョン情報を解析できませんでした。

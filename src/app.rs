@@ -4,7 +4,7 @@ use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
 use crate::constants::{
     APPROX_CHAR_WIDTH, CONTROL_BUTTON_WIDTH, MPRIS_POLL_INTERVAL_MS, MUSIC_NOTE_SIZE,
     PROGRESS_TICK_MS, SCROLL_GAP, SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS,
-    SNAP_ART_PACKAGES, UPDATE_MANIFEST_URL, USER_AGENT, WIDTH_SETTLE_MS,
+    SNAP_ART_PACKAGES, UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
 use crate::fl;
 use crate::mpris;
@@ -1540,51 +1540,33 @@ async fn check_for_updates() -> String {
         Err(_) => return fl!("update-error-client"),
     };
 
-    let resp = match client.get(UPDATE_MANIFEST_URL).send().await {
+    let resp = match client.get(UPDATE_LATEST_RELEASE_URL).send().await {
         Ok(r) => r,
         Err(_) => return fl!("update-error-connect"),
     };
 
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(_) => return fl!("update-error-read"),
-    };
-
-    let Some(remote_version) = parse_package_version(&text) else {
+    // `/releases/latest` redirects to `/releases/tag/<tag>`; the published tag
+    // is therefore the final path segment. No releases yet means a 404 with no
+    // redirect, which leaves no tag to read.
+    let final_url = resp.url().clone();
+    let Some(remote_version) = final_url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|segment| !segment.is_empty() && *segment != "latest")
+        .map(|tag| tag.trim_start_matches('v').to_string())
+    else {
         return fl!("update-error-parse");
     };
+
     let local_version = env!("CARGO_PKG_VERSION");
 
-    // Only report an update when the remote is genuinely newer — a local build
-    // that runs ahead of `main` should not be told to "update" backwards.
+    // Only report an update when the release is genuinely newer — a development
+    // build running ahead of the latest release shouldn't be told to downgrade.
     if compare_versions(&remote_version, local_version) == std::cmp::Ordering::Greater {
         fl!("update-available", remote = remote_version, local = local_version)
     } else {
         fl!("update-uptodate", version = local_version)
     }
-}
-
-/// Extract `version` from the `[package]` section of a Cargo.toml.
-///
-/// Scoped to `[package]` so a dependency's `version = "…"` (several of which sit
-/// at column 0 in this manifest) can never be mistaken for the package version.
-fn parse_package_version(toml: &str) -> Option<String> {
-    let mut in_package = false;
-    for line in toml.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_package = line == "[package]";
-            continue;
-        }
-        if in_package {
-            if let Some(rest) = line.strip_prefix("version") {
-                if let Some(value) = rest.trim_start().strip_prefix('=') {
-                    return Some(value.trim().trim_matches('"').to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Compare dotted numeric versions component by component (1.10.0 > 1.9.0),

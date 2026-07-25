@@ -27,5 +27,4 @@ update-uptodate = 已是最新 (v{ $version })
 update-available = 有可用更新：v{ $remote }（当前：v{ $local }）
 update-error-client = 无法创建 HTTP 客户端。
 update-error-connect = 无法连接到 GitHub。
-update-error-read = 无法读取响应。
 update-error-parse = 无法解析版本信息。

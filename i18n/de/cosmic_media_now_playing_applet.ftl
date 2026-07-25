@@ -27,5 +27,4 @@ update-uptodate = Aktuell (v{ $version })
 update-available = Update verfügbar: v{ $remote } (aktuell: v{ $local })
 update-error-client = HTTP-Client konnte nicht erstellt werden.
 update-error-connect = Verbindung zu GitHub fehlgeschlagen.
-update-error-read = Antwort konnte nicht gelesen werden.
 update-error-parse = Versionsinformationen konnten nicht gelesen werden.

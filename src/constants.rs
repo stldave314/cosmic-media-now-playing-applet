@@ -67,11 +67,17 @@ pub const ARMED_WATCH_MAX_SLEEP_MS: u64 = 500;
 /// metadata so it can't drift out of date.
 pub const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
-/// Manifest consulted by the update check, derived from the `repository` field
-/// in Cargo.toml so the URL has a single source of truth. GitHub redirects this
-/// to `raw.githubusercontent.com`, which reqwest follows.
-pub const UPDATE_MANIFEST_URL: &str =
-    concat!(env!("CARGO_PKG_REPOSITORY"), "/raw/main/Cargo.toml");
+/// Consulted by the update check, derived from the `repository` field in
+/// Cargo.toml so the URL has a single source of truth.
+///
+/// This deliberately points at the latest *release* rather than the version in
+/// `main`: the two diverge as soon as a version-bumping commit lands, and
+/// telling users about a version they cannot download is worse than saying
+/// nothing. GitHub redirects this to `/releases/tag/<tag>`, so the published
+/// tag can be read straight off the final URL — no JSON parsing needed. A repo
+/// with no releases yet answers 404 and doesn't redirect.
+pub const UPDATE_LATEST_RELEASE_URL: &str =
+    concat!(env!("CARGO_PKG_REPOSITORY"), "/releases/latest");
 
 /// Template for YouTube thumbnails, used when a browser's art file is not
 /// reachable. `{id}` is replaced with the video id.
