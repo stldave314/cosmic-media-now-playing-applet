@@ -4,7 +4,8 @@ version = "0.5.0"
 edition = "2021"
 license = "GPL-3.0"
 description = "A COSMIC DE panel applet that displays the currently playing media track using MPRIS"
-repository = "https://github.com/user/cosmic-media-now-playing-applet"
+repository = "https://github.com/stldave314/cosmic-media-now-playing-applet"
+authors = ["Dave <stldave314@users.noreply.github.com>"]
 
 [dependencies]
 futures-util = "0.3"
@@ -30,4 +31,38 @@ features = [
     "tokio",
     "wayland",
     "winit",
+]
+
+# Strip symbols from release builds — smaller binary and smaller packages.
+[profile.release]
+strip = true
+
+# ── Packaging metadata ──────────────────────────────────────────────────────
+# .deb via `cargo deb` (cargo-deb). Installs to the same paths as install.sh so
+# the COSMIC panel discovers the applet. `$auto` resolves shared-lib deps.
+[package.metadata.deb]
+maintainer = "Dave <stldave314@users.noreply.github.com>"
+copyright = "2026, Dave"
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = """
+A lightweight COSMIC Desktop panel applet that shows the currently playing \
+media track (title, artist, album art) via MPRIS, with playback controls, a \
+seekable progress bar, hover controls, and a configurable panel display."""
+assets = [
+    ["target/release/cosmic-media-now-playing-applet", "usr/bin/", "755"],
+    ["resources/app.desktop", "usr/share/applications/com.github.cosmic_media_now_playing_applet.desktop", "644"],
+    ["resources/app.metainfo.xml", "usr/share/metainfo/com.github.cosmic_media_now_playing_applet.metainfo.xml", "644"],
+    ["resources/icon.svg", "usr/share/icons/hicolor/scalable/apps/com.github.cosmic_media_now_playing_applet.svg", "644"],
+]
+
+# .rpm via `cargo generate-rpm` (cargo-generate-rpm). Requires a prior release
+# build; dependencies are auto-detected.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/cosmic-media-now-playing-applet", dest = "/usr/bin/cosmic-media-now-playing-applet", mode = "755" },
+    { source = "resources/app.desktop", dest = "/usr/share/applications/com.github.cosmic_media_now_playing_applet.desktop", mode = "644" },
+    { source = "resources/app.metainfo.xml", dest = "/usr/share/metainfo/com.github.cosmic_media_now_playing_applet.metainfo.xml", mode = "644" },
+    { source = "resources/icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.github.cosmic_media_now_playing_applet.svg", mode = "644" },
 ]

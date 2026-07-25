@@ -171,6 +171,25 @@ A custom prefix is supported: `PREFIX=/usr/local ./install.sh build-install`.
 | `./install.sh clean` | Remove build artifacts |
 | `./install.sh help` | List all commands |
 
+### Building Release Packages
+
+Native packages are the right format for a COSMIC applet — they install the binary **and** the `.desktop` entry the panel needs to discover it (AppImage and Flatpak don't fit the applet model). Build them into `dist/`:
+
+| Command | Output |
+|---------|--------|
+| `./install.sh package` | All available formats (skips `.deb`/`.rpm` if their tooling isn't installed) |
+| `./install.sh package-tar` | Portable binary tarball (binary + resources + `install.sh`) |
+| `./install.sh package-deb` | Debian/Ubuntu/Pop!_OS `.deb` — needs `cargo install cargo-deb` |
+| `./install.sh package-rpm` | Fedora/RHEL `.rpm` — needs `cargo install cargo-generate-rpm` |
+
+From a tarball, install without rebuilding: `BIN_SRC=./cosmic-media-now-playing-applet ./install.sh install`.
+
+**Cutting a GitHub release:** push a version tag and the [`release`](.github/workflows/release.yml) workflow builds all three formats and attaches them to the release:
+
+```bash
+git tag v0.5.0 && git push origin v0.5.0
+```
+
 ---
 
 ## Usage

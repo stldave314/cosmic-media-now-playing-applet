@@ -9,13 +9,20 @@ APP_NAME="cosmic-media-now-playing-applet"
 APP_ID="com.github.cosmic_media_now_playing_applet"
 PREFIX="${PREFIX:-/usr}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+DIST_DIR="${DIST_DIR:-dist}"
 
-BIN_SRC="${CARGO_TARGET_DIR}/release/${APP_NAME}"
+# BIN_SRC can be overridden (e.g. to install from an extracted release tarball:
+# `BIN_SRC=./cosmic-media-now-playing-applet ./install.sh install`).
+BIN_SRC="${BIN_SRC:-${CARGO_TARGET_DIR}/release/${APP_NAME}}"
 BIN_DST="${PREFIX}/bin/${APP_NAME}"
 DESKTOP_DST="${PREFIX}/share/applications/${APP_ID}.desktop"
-APPDATA_DST="${PREFIX}/share/appdata/${APP_ID}.metainfo.xml"
+APPDATA_DST="${PREFIX}/share/metainfo/${APP_ID}.metainfo.xml"
+APPDATA_DST_LEGACY="${PREFIX}/share/appdata/${APP_ID}.metainfo.xml"
 ICON_DST="${PREFIX}/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
 CONFIG_DIR="${HOME}/.config/cosmic/${APP_ID}"
+
+# Package version, read from Cargo.toml.
+get_version() { grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'; }
 
 # ── Colors ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -106,7 +113,7 @@ do_uninstall() {
     step "Uninstalling ${APP_NAME}..."
     local removed=0
 
-    for f in "${BIN_DST}" "${DESKTOP_DST}" "${APPDATA_DST}" "${ICON_DST}"; do
+    for f in "${BIN_DST}" "${DESKTOP_DST}" "${APPDATA_DST}" "${APPDATA_DST_LEGACY}" "${ICON_DST}"; do
         if [ -f "${f}" ]; then
             info "Removing ${f}"
             sudo rm -f "${f}"
@@ -201,7 +208,80 @@ do_status() {
 do_clean() {
     step "Cleaning build artifacts..."
     cargo clean
+    rm -rf "${DIST_DIR}"
     success "Build artifacts removed."
+}
+
+# ── Packaging ───────────────────────────────────────────────────────────────
+# Portable binary tarball: the release binary plus resources and this script,
+# so it can be installed with `BIN_SRC=./<binary> ./install.sh install`.
+do_package_tar() {
+    do_build
+    local ver name stage
+    ver="$(get_version)"
+    name="${APP_NAME}-${ver}-x86_64-linux"
+    stage="${DIST_DIR}/${name}"
+
+    step "Assembling tarball..."
+    mkdir -p "${stage}/resources"
+    install -Dm0755 "${BIN_SRC}" "${stage}/${APP_NAME}"
+    cp resources/app.desktop resources/app.metainfo.xml resources/icon.svg "${stage}/resources/"
+    cp install.sh "${stage}/"
+    [ -f LICENSE ] && cp LICENSE "${stage}/"
+    [ -f README.md ] && cp README.md "${stage}/"
+    tar -C "${DIST_DIR}" -czf "${DIST_DIR}/${name}.tar.gz" "${name}"
+    rm -rf "${stage}"
+    success "Created ${DIST_DIR}/${name}.tar.gz"
+}
+
+# Debian/Ubuntu/Pop!_OS package via cargo-deb.
+do_package_deb() {
+    if ! command -v cargo-deb &>/dev/null; then
+        error "cargo-deb not found. Install it with: cargo install cargo-deb"
+        return 1
+    fi
+    step "Building .deb package..."
+    mkdir -p "${DIST_DIR}"
+    cargo deb
+    cp "${CARGO_TARGET_DIR}/debian/"*.deb "${DIST_DIR}/"
+    success "Created .deb in ${DIST_DIR}/"
+}
+
+# Fedora/RHEL package via cargo-generate-rpm (needs a prior release build).
+do_package_rpm() {
+    if ! command -v cargo-generate-rpm &>/dev/null; then
+        error "cargo-generate-rpm not found. Install it with: cargo install cargo-generate-rpm"
+        return 1
+    fi
+    do_build
+    step "Building .rpm package..."
+    mkdir -p "${DIST_DIR}"
+    cargo generate-rpm
+    cp "${CARGO_TARGET_DIR}/generate-rpm/"*.rpm "${DIST_DIR}/"
+    success "Created .rpm in ${DIST_DIR}/"
+}
+
+# Build every available package format into DIST_DIR (skips deb/rpm when their
+# tooling isn't installed).
+do_package() {
+    step "Building release packages into ${DIST_DIR}/ ..."
+    mkdir -p "${DIST_DIR}"
+    do_package_tar
+    separator
+    if command -v cargo-deb &>/dev/null; then
+        do_package_deb
+    else
+        warn "Skipping .deb — cargo-deb not installed (cargo install cargo-deb)"
+    fi
+    separator
+    if command -v cargo-generate-rpm &>/dev/null; then
+        do_package_rpm
+    else
+        warn "Skipping .rpm — cargo-generate-rpm not installed (cargo install cargo-generate-rpm)"
+    fi
+    separator
+    success "Packages in ${DIST_DIR}/:"
+    ls -1 "${DIST_DIR}/" 2>/dev/null | sed 's/^/        /'
 }
 
 # ── Usage ───────────────────────────────────────────────────────────────────
@@ -224,13 +304,22 @@ usage() {
     echo -e "    ${GREEN}clean${RESET}           Remove build artifacts"
     echo -e "    ${GREEN}help${RESET}            Show this help message"
     echo ""
+    echo -e "  ${BOLD}Packaging (for releases → ${DIST_DIR}/):${RESET}"
+    echo -e "    ${GREEN}package${RESET}         Build all available formats (tarball, .deb, .rpm)"
+    echo -e "    ${GREEN}package-tar${RESET}     Build the portable binary tarball"
+    echo -e "    ${GREEN}package-deb${RESET}     Build a .deb (needs: cargo install cargo-deb)"
+    echo -e "    ${GREEN}package-rpm${RESET}     Build a .rpm (needs: cargo install cargo-generate-rpm)"
+    echo ""
     echo -e "  ${BOLD}Environment variables:${RESET}"
     echo -e "    ${YELLOW}PREFIX${RESET}          Installation prefix (default: /usr)"
     echo -e "    ${YELLOW}CARGO_TARGET_DIR${RESET}  Cargo target directory (default: target)"
+    echo -e "    ${YELLOW}DIST_DIR${RESET}        Package output directory (default: dist)"
+    echo -e "    ${YELLOW}BIN_SRC${RESET}         Binary to install (e.g. when installing from a tarball)"
     echo ""
     echo -e "  ${BOLD}Examples:${RESET}"
     echo -e "    $0 build-install        # Build and install"
     echo -e "    $0 reinstall            # Full clean reinstall"
+    echo -e "    $0 package              # Build release packages into ${DIST_DIR}/"
     echo -e "    PREFIX=/usr/local $0 build-install  # Install to /usr/local"
     echo ""
 }
@@ -259,6 +348,11 @@ main() {
         reinstall)      do_reinstall ;;
         status)         do_status ;;
         clean)          do_clean ;;
+        package)        do_package ;;
+        package-tar)    do_package_tar ;;
+        package-deb)    do_package_deb ;;
+        package-rpm)    do_package_rpm ;;
+        release)        do_package ;;
         help|--help|-h) usage ;;
         *)
             error "Unknown command: ${1}"

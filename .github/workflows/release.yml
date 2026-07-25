@@ -1,0 +1,55 @@
+name: Release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v0.5.0 && git push origin v0.5.0
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            libexpat1-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            libxkbcommon-dev \
+            libinput-dev \
+            libgbm-dev \
+            libseat-dev \
+            libudev-dev \
+            cmake \
+            pkg-config
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install packaging tools
+        run: cargo install cargo-deb cargo-generate-rpm
+
+      - name: Build packages
+        run: ./install.sh package
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+          generate_release_notes: true
+          fail_on_unmatched_files: true
