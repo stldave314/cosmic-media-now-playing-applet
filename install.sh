@@ -72,10 +72,27 @@ check_dependencies() {
 }
 
 # ── Build ───────────────────────────────────────────────────────────────────
+# CARGO_FEATURES is set to "release-build" by the packaging targets, which forces
+# diagnostic logging off at compile time (see src/debug.rs).
+CARGO_FEATURES="${CARGO_FEATURES:-}"
+
 do_build() {
-    step "Building ${APP_NAME} (release mode)..."
-    cargo build --release
+    if [ -n "${CARGO_FEATURES}" ]; then
+        step "Building ${APP_NAME} (release mode, features: ${CARGO_FEATURES})..."
+        cargo build --release --features "${CARGO_FEATURES}"
+    else
+        step "Building ${APP_NAME} (release mode)..."
+        cargo build --release
+    fi
     success "Build complete: ${BIN_SRC}"
+}
+
+# Everything that produces a distributable artifact goes through here, so the
+# release-build feature can't be forgotten on one path.
+do_release_build() {
+    CARGO_FEATURES="release-build"
+    info "Release build — diagnostic logging forced OFF"
+    do_build
 }
 
 # ── Install ─────────────────────────────────────────────────────────────────
@@ -143,13 +160,56 @@ do_uninstall() {
 }
 
 # ── Reload panel ────────────────────────────────────────────────────────────
+# The panel must be restarted for a new applet binary to be picked up: killing
+# just the applet process does not work, because cosmic-panel spawns applets only
+# at startup and does not respawn them.
+#
+# cosmic-session is *supposed* to bring the panel back, but it does not do so
+# reliably after repeated restarts — so relaunch it here rather than assuming.
 do_reload_panel() {
-    if pgrep -x cosmic-panel &>/dev/null; then
-        step "Reloading COSMIC panel..."
-        pkill -x cosmic-panel || true
-        success "Panel restarted (cosmic-session will bring it back automatically)."
-    else
+    if ! pgrep -x cosmic-panel &>/dev/null; then
         info "cosmic-panel is not running — skipping panel reload."
+        return 0
+    fi
+
+    step "Reloading COSMIC panel..."
+    pkill -x cosmic-panel || true
+
+    # Give the session a chance to restart it on its own.
+    local waited=0
+    while [ "${waited}" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+        if pgrep -x cosmic-panel &>/dev/null; then
+            success "Panel restarted by cosmic-session after ${waited}s."
+            return 0
+        fi
+    done
+
+    # It didn't come back — start it ourselves, inheriting the session
+    # environment from another COSMIC process so it can reach the compositor.
+    warn "cosmic-session did not restart the panel; starting it directly..."
+    local src
+    src="$(pgrep -x cosmic-osd || pgrep -x cosmic-bg || pgrep -x cosmic-comp | head -1)"
+    if [ -z "${src}" ]; then
+        error "Could not find a COSMIC process to source the session environment from."
+        info  "Start the panel manually with: cosmic-panel &"
+        return 1
+    fi
+
+    local envvars
+    envvars="$(tr '\0' '\n' < "/proc/${src}/environ" 2>/dev/null | grep -E \
+        '^(WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_DATA_DIRS|XDG_CONFIG_DIRS|HOME|USER|PATH|DISPLAY)=')"
+
+    # shellcheck disable=SC2086
+    setsid env ${envvars} nohup cosmic-panel >/dev/null 2>&1 &
+    sleep 3
+
+    if pgrep -x cosmic-panel &>/dev/null; then
+        success "Panel started."
+    else
+        error "Panel failed to start. Run 'cosmic-panel &' from a terminal to see why."
+        return 1
     fi
 }
 
@@ -216,7 +276,7 @@ do_clean() {
 # Portable binary tarball: the release binary plus resources and this script,
 # so it can be installed with `BIN_SRC=./<binary> ./install.sh install`.
 do_package_tar() {
-    do_build
+    do_release_build
     local ver name stage
     ver="$(get_version)"
     name="${APP_NAME}-${ver}-x86_64-linux"
@@ -241,8 +301,10 @@ do_package_deb() {
         return 1
     fi
     step "Building .deb package..."
+    info "Release build — diagnostic logging forced OFF"
     mkdir -p "${DIST_DIR}"
-    cargo deb
+    # cargo-deb runs its own build, so the feature has to be passed through.
+    cargo deb -- --features release-build
     cp "${CARGO_TARGET_DIR}/debian/"*.deb "${DIST_DIR}/"
     success "Created .deb in ${DIST_DIR}/"
 }
@@ -253,7 +315,7 @@ do_package_rpm() {
         error "cargo-generate-rpm not found. Install it with: cargo install cargo-generate-rpm"
         return 1
     fi
-    do_build
+    do_release_build
     step "Building .rpm package..."
     mkdir -p "${DIST_DIR}"
     cargo generate-rpm

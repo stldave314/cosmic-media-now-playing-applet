@@ -2,6 +2,8 @@
 
 mod app;
 mod config;
+mod constants;
+mod debug;
 mod i18n;
 mod mpris;
 

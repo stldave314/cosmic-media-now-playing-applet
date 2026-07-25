@@ -1,10 +1,16 @@
 [package]
 name = "cosmic-media-now-playing-applet"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "GPL-3.0"
 description = "A COSMIC DE panel applet that displays the currently playing media track using MPRIS"
 repository = "https://github.com/stldave314/cosmic-media-now-playing-applet"
+
+[features]
+# Enabled by the packaging targets in install.sh. Forces diagnostic logging off
+# at compile time so a release can never ship with it on, regardless of the
+# `ENABLED` switch in src/debug.rs.
+release-build = []
 
 [dependencies]
 futures-util = "0.3"
@@ -14,7 +20,7 @@ tokio = { version = "1", features = ["full"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }
 reqwest = "0.13.2"
-base64 = "0.22"
+base64 = "0.23"
 
 [dependencies.i18n-embed]
 version = "0.16"

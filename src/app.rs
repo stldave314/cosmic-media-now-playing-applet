@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
 
 use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
+use crate::constants::{
+    APPROX_CHAR_WIDTH, CONTROL_BUTTON_WIDTH, MPRIS_POLL_INTERVAL_MS, MUSIC_NOTE_SIZE,
+    PROGRESS_TICK_MS, SCROLL_GAP, SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS,
+    SNAP_ART_PACKAGES, UPDATE_MANIFEST_URL, USER_AGENT, WIDTH_SETTLE_MS,
+};
 use crate::fl;
 use crate::mpris;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -15,30 +20,12 @@ use std::sync::LazyLock;
 static AUTOSIZE_MAIN_ID: LazyLock<widget::Id> =
     LazyLock::new(|| widget::Id::new("autosize-main"));
 
-/// The separator inserted between repetitions of scrolling text.
-const SCROLL_GAP: &str = "    ·    ";
-
-/// Approximate character width in pixels for estimating overflow.
-const APPROX_CHAR_WIDTH: f32 = 8.0;
-
-/// Size in pixels of the music-note fallback icon in the panel.
-const MUSIC_NOTE_SIZE: f32 = 16.0;
-
-/// Approximate width in pixels of a single panel playback-control button,
-/// including its spacing. Used to decide whether all three controls fit.
-const CONTROL_BUTTON_WIDTH: f32 = 34.0;
-
 /// Defines which view the popup should currently display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PopupState {
+    #[default]
     MediaView,
     SettingsView,
-}
-
-impl Default for PopupState {
-    fn default() -> Self {
-        Self::MediaView
-    }
 }
 
 /// Application model for the Now Playing panel applet.
@@ -80,6 +67,9 @@ pub struct NowPlaying {
     width_settle_gen: u64,
     /// Current playback position in microseconds (from MPRIS).
     position_us: i64,
+    /// Wall-clock instant at which `position_us` was last set, used to smoothly
+    /// interpolate the progress bar between the (1s) MPRIS polls.
+    position_instant: std::time::Instant,
     /// Current track duration in microseconds (from MPRIS metadata, 0 = unknown).
     length_us: i64,
     /// MPRIS track ID object path for the active track (required by SetPosition).
@@ -96,6 +86,17 @@ pub struct NowPlaying {
     can_go_next: bool,
     /// Whether the active player supports skipping to the previous track.
     can_go_previous: bool,
+    /// When checked, pause as soon as the player advances past the current
+    /// track — i.e. let the current file finish, then stop at the start of the
+    /// next one until the user presses play.
+    pause_next_track: bool,
+    /// Identity of the track we're waiting to finish while `pause_next_track` is
+    /// armed. When the active track's identity changes away from this, we pause.
+    /// Uses `mpris:trackid` when available, else `xesam:url`, else title+artist —
+    /// browsers (YouTube Music) often omit a stable trackid.
+    armed_track_key: Option<String>,
+    /// The next queued track (title, artist), if the player exposes TrackList.
+    next_track: Option<(String, String)>,
     /// Status message for the version update check.
     update_status: Option<String>,
 }
@@ -139,6 +140,7 @@ impl Default for NowPlaying {
             slider_width: NowPlayingConfig::default().widget_width,
             width_settle_gen: 0,
             position_us: 0,
+            position_instant: std::time::Instant::now(),
             length_us: 0,
             track_id: String::new(),
             track_url: None,
@@ -147,12 +149,60 @@ impl Default for NowPlaying {
             panel_hovered: false,
             can_go_next: true,
             can_go_previous: true,
+            pause_next_track: false,
+            armed_track_key: None,
+            next_track: None,
             update_status: None,
         }
     }
 }
 
+/// A stable-ish identity for a track, used to detect when playback advances to a
+/// different track. Prefers `mpris:trackid`, then `xesam:url`, then title+artist,
+/// since browsers (e.g. YouTube Music) frequently omit a stable trackid.
+fn track_key_of(track_id: &str, track_url: Option<&str>, title: &str, artist: &str) -> String {
+    mpris::track_key(track_id, track_url, title, artist)
+}
+
+/// A settings entry whose label sits tightly above a full-width slider.
+/// The tight inner spacing keeps the settings popup short.
+fn labeled_slider<'a>(
+    label: String,
+    slider: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    widget::column::with_capacity(2)
+        .spacing(2)
+        .push(widget::text::body(label))
+        .push(slider)
+        .into()
+}
+
+/// A settings entry with the label on the left and its control (dropdown,
+/// button, …) right-aligned on the same line.
+fn labeled_control<'a>(
+    label: String,
+    control: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    widget::row::with_capacity(3)
+        .spacing(8)
+        .align_y(Vertical::Center)
+        .push(widget::text::body(label))
+        .push(widget::space::horizontal().width(Length::Fill))
+        .push(control)
+        .into()
+}
+
 impl NowPlaying {
+    /// The identity key for the currently displayed track.
+    fn current_track_key(&self) -> String {
+        track_key_of(
+            &self.track_id,
+            self.track_url.as_deref(),
+            &self.track_title,
+            &self.track_artist,
+        )
+    }
+
     /// Rebuilds `display_text` from current track metadata and display format config.
     fn rebuild_display_text(&mut self) {
         if !self.has_player || self.track_title.is_empty() {
@@ -225,8 +275,14 @@ impl NowPlaying {
                 NowPlayingConfig::VERSION,
             )
         {
-            if let Err(why) = self.config.write_entry(&context) {
-                eprintln!("error saving config: {why}");
+            match self.config.write_entry(&context) {
+                Ok(()) => crate::debug_log!(crate::debug::CONFIG, "saved"),
+                Err(why) => {
+                    // A real failure the user may need to know about, so this
+                    // stays on stderr as well as the debug log.
+                    eprintln!("error saving config: {why}");
+                    crate::debug_log!(crate::debug::CONFIG, "save FAILED: {why}");
+                }
             }
         }
     }
@@ -294,15 +350,25 @@ impl NowPlaying {
 
         // Progress / seek bar — only shown when the player reports a known duration.
         let progress_bar: Option<Element<'_, Message>> = if self.length_us > 0 {
+            // Interpolate the reported position forward by the time elapsed since
+            // the last poll (while playing) so the bar advances smoothly between
+            // the 1s MPRIS updates rather than jumping once a second.
+            let effective_us = if self.playback_status == "Playing" {
+                (self.position_us as f64
+                    + self.position_instant.elapsed().as_micros() as f64)
+                    .min(self.length_us as f64)
+            } else {
+                self.position_us as f64
+            };
             let progress = if self.seeking {
                 self.seek_value
             } else {
-                (self.position_us as f64 / self.length_us as f64).clamp(0.0, 1.0)
+                (effective_us / self.length_us as f64).clamp(0.0, 1.0)
             };
             let elapsed_secs = if self.seeking {
                 (self.seek_value * self.length_us as f64 / 1_000_000.0) as u64
             } else {
-                (self.position_us.max(0) as f64 / 1_000_000.0) as u64
+                (effective_us.max(0.0) / 1_000_000.0) as u64
             };
             let total_secs = (self.length_us as f64 / 1_000_000.0) as u64;
             let time_label = widget::text::caption(format!(
@@ -360,37 +426,94 @@ impl NowPlaying {
         if let Some(bar) = progress_bar {
             content = content.push(bar);
         }
-        let content = content.push(controls);
+        content = content.push(controls);
+
+        // "Next: …" — only for players that expose the TrackList interface.
+        if let Some((next_title, next_artist)) = &self.next_track {
+            let label = if next_artist.is_empty() {
+                next_title.clone()
+            } else {
+                format!("{next_artist} — {next_title}")
+            };
+            content = content.push(
+                widget::container(widget::text::caption(format!("{}: {label}", fl!("next-label"))))
+                    .center_x(Length::Fill),
+            );
+        }
+
+        // "Pause before playing next track" — only meaningful when there's a next
+        // track (CanGoNext); otherwise it's shown inactive (disabled). Switch
+        // first, then the label, matching the settings toggles.
+        let armed = self.pause_next_track;
+        let can_toggle = self.can_go_next;
+        let pause_row = widget::row::with_capacity(2)
+            .spacing(12)
+            .align_y(Vertical::Center)
+            .push(
+                widget::toggler(armed)
+                    .on_toggle_maybe(can_toggle.then_some(Message::TogglePauseNextTrack)),
+            )
+            .push(widget::text::body(fl!("pause-next-track")));
+
+        // While armed, outline it in the accent colour so the pending stop is
+        // unmistakable at a glance.
+        let pause_container = widget::container(pause_row)
+            .padding([6, 10])
+            .class(cosmic::theme::Container::custom(move |theme| {
+                let cosmic = theme.cosmic();
+                let mut style = widget::container::Style {
+                    text_color: Some(theme.current_container().on.into()),
+                    ..Default::default()
+                };
+                if armed {
+                    style.border = cosmic::iced::Border {
+                        radius: cosmic.corner_radii.radius_s.into(),
+                        width: 1.0,
+                        color: cosmic.accent.base.into(),
+                    };
+                }
+                style
+            }));
+
+        // The whole element — switch, label and padding — toggles the setting.
+        // This must react on *release*: the toggler publishes on ButtonReleased
+        // and captures it, so clicking the switch itself is handled once here
+        // rather than firing both handlers and cancelling itself out.
+        content = content.push(if can_toggle {
+            Element::from(
+                widget::mouse_area(pause_container)
+                    .on_release(Message::TogglePauseNextTrack(!armed))
+                    .interaction(cosmic::iced::mouse::Interaction::Pointer),
+            )
+        } else {
+            Element::from(pause_container)
+        });
 
         self.core.applet.popup_container(content).into()
     }
 
     /// The configuration popup window: width slider, scroll speed, display format, margin.
     fn view_settings(&self) -> Element<'_, Message> {
-        let back_btn = widget::button::standard("Back")
+        let back_btn = widget::button::standard(fl!("back"))
             .on_press(Message::SwitchPopupView(PopupState::MediaView));
 
-        let width_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("widget-width"),
-            self.slider_width
-        ));
+        let width_label = format!("{}: {}px", fl!("widget-width"), self.slider_width);
         let width_slider =
             widget::slider(100.0..=500.0, self.slider_width as f32, Message::SetWidth)
                 .step(10.0_f32);
 
-        let speed_label = widget::text::body(if self.config.scroll_speed == 0 {
+        let speed_label = if self.config.scroll_speed == 0 {
             format!("{}: {}", fl!("scroll-speed"), fl!("scroll-off"))
         } else {
             format!("{}: {}/10", fl!("scroll-speed"), self.config.scroll_speed)
-        });
+        };
         let speed_slider = widget::slider(
             0.0..=10.0,
             self.config.scroll_speed as f32,
             |v| Message::SetScrollSpeed(v as u32),
         ).step(1.0_f32);
 
-        let format_label = widget::text::body(fl!("display-format"));
+        let format_label = fl!("display-format");
         let format_options: Vec<String> = vec![
             fl!("format-title-only"),
             fl!("format-artist-title"),
@@ -411,38 +534,22 @@ impl NowPlaying {
             }),
         );
 
-        let margin_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("top-margin"),
-            self.config.top_margin
-        ));
+        let margin_label = format!("{}: {}px", fl!("top-margin"), self.config.top_margin);
         let margin_slider =
             widget::slider(-10.0..=20.0, self.config.top_margin as f32, Message::SetTopMargin)
                 .step(1.0_f32);
 
-        let left_margin_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("left-margin"),
-            self.config.left_margin
-        ));
+        let left_margin_label = format!("{}: {}px", fl!("left-margin"), self.config.left_margin);
         let left_margin_slider =
             widget::slider(0.0..=40.0, self.config.left_margin as f32, Message::SetLeftMargin)
                 .step(1.0_f32);
 
-        let right_margin_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("right-margin"),
-            self.config.right_margin
-        ));
+        let right_margin_label = format!("{}: {}px", fl!("right-margin"), self.config.right_margin);
         let right_margin_slider =
             widget::slider(0.0..=40.0, self.config.right_margin as f32, Message::SetRightMargin)
                 .step(1.0_f32);
 
-        let art_size_label = widget::text::body(format!(
-            "{}: {}px",
-            fl!("art-size"),
-            self.config.panel_art_size
-        ));
+        let art_size_label = format!("{}: {}px", fl!("art-size"), self.config.panel_art_size);
         let art_size_slider = widget::slider(
             12.0..=48.0,
             self.config.panel_art_size as f32,
@@ -454,25 +561,18 @@ impl NowPlaying {
         // is shown, so omit it entirely under "No Icon".
         let icon_spacing_section: Option<Element<'_, Message>> =
             (self.config.panel_icon != PanelIcon::None).then(|| {
-                widget::column::with_capacity(2)
-                    .spacing(12)
-                    .push(widget::text::body(format!(
-                        "{}: {}px",
-                        fl!("icon-spacing"),
-                        self.config.icon_spacing
-                    )))
-                    .push(
-                        widget::slider(
-                            0.0..=40.0,
-                            self.config.icon_spacing as f32,
-                            Message::SetIconSpacing,
-                        )
-                        .step(1.0_f32),
+                labeled_slider(
+                    format!("{}: {}px", fl!("icon-spacing"), self.config.icon_spacing),
+                    widget::slider(
+                        0.0..=40.0,
+                        self.config.icon_spacing as f32,
+                        Message::SetIconSpacing,
                     )
-                    .into()
+                    .step(1.0_f32),
+                )
             });
 
-        let panel_icon_label = widget::text::body(fl!("panel-icon"));
+        let panel_icon_label = fl!("panel-icon");
         let panel_icon_options: Vec<String> = vec![
             fl!("panel-icon-album-art"),
             fl!("panel-icon-music-note"),
@@ -496,20 +596,35 @@ impl NowPlaying {
         // Hover controls only make sense with a leading icon to anchor the
         // popup click, so the toggle is disabled when "No Icon" is selected.
         // Switch first, then a small margin, then the label.
-        let hover_toggle = widget::row::with_capacity(2)
+        let hover_enabled = self.config.panel_icon != PanelIcon::None;
+        let hover_on = self.config.show_hover_controls;
+        let hover_row = widget::row::with_capacity(2)
             .spacing(12)
             .align_y(Vertical::Center)
             .push(
-                widget::toggler(self.config.show_hover_controls).on_toggle_maybe(
-                    (self.config.panel_icon != PanelIcon::None)
-                        .then_some(Message::SetHoverControls),
-                ),
+                widget::toggler(hover_on)
+                    .on_toggle_maybe(hover_enabled.then_some(Message::SetHoverControls)),
             )
             .push(widget::text::body(fl!("hover-controls")));
 
-        let content = widget::column::with_capacity(18)
-            .spacing(12)
-            .padding(16)
+        // The label is part of the click target too. This reacts on *release*:
+        // the toggler publishes on ButtonReleased and captures it, so clicking
+        // the switch itself is handled once rather than toggling twice.
+        let hover_toggle: Element<'_, Message> = if hover_enabled {
+            widget::mouse_area(hover_row)
+                .on_release(Message::SetHoverControls(!hover_on))
+                .interaction(cosmic::iced::mouse::Interaction::Pointer)
+                .into()
+        } else {
+            hover_row.into()
+        };
+
+        // Groups keep each label tight against its own slider (2px), while the
+        // outer spacing separates the settings from each other — this keeps the
+        // popup short enough for smaller screens.
+        let content = widget::column::with_capacity(14)
+            .spacing(8)
+            .padding(12)
             .push(
                 widget::row::with_capacity(2)
                     .spacing(12)
@@ -517,40 +632,32 @@ impl NowPlaying {
                     .push(widget::text::title4(fl!("app-title")))
                     .align_y(Vertical::Center)
             )
-            .push(width_label)
-            .push(width_slider)
-            .push(margin_label)
-            .push(margin_slider)
-            .push(left_margin_label)
-            .push(left_margin_slider)
-            .push(right_margin_label)
-            .push(right_margin_slider)
-            .push(speed_label)
-            .push(speed_slider)
-            .push(format_label)
-            .push(format_dropdown)
-            .push(panel_icon_label)
-            .push(panel_icon_dropdown)
-            .push(art_size_label)
-            .push(art_size_slider)
+            .push(labeled_slider(width_label, width_slider))
+            .push(labeled_slider(margin_label, margin_slider))
+            .push(labeled_slider(left_margin_label, left_margin_slider))
+            .push(labeled_slider(right_margin_label, right_margin_slider))
+            .push(labeled_slider(speed_label, speed_slider))
+            .push(labeled_control(format_label, format_dropdown))
+            .push(labeled_control(panel_icon_label, panel_icon_dropdown))
+            .push(labeled_slider(art_size_label, art_size_slider))
             .push_maybe(icon_spacing_section)
             .push(hover_toggle);
 
+        // Version and the update button share one line; the result only takes up
+        // space once there is something to report.
         let current_version = env!("CARGO_PKG_VERSION");
-        let version_label = widget::text::body(format!("Version: {}", current_version));
-        let check_update_btn = widget::button::standard("Check for updates")
-            .on_press(Message::CheckUpdate);
-        let status_label = widget::text::caption(self.update_status.clone().unwrap_or_default());
-        
-        let update_section = widget::column::with_capacity(3)
-            .spacing(8)
-            .align_x(cosmic::iced::alignment::Horizontal::Center)
-            .push(version_label)
-            .push(check_update_btn)
-            .push(status_label);
+        let update_row = labeled_control(
+            fl!("version-label", version = current_version),
+            widget::button::standard(fl!("check-updates")).on_press(Message::CheckUpdate),
+        );
+        let status_label = self.update_status.as_ref().map(|s| {
+            widget::text::caption(s.clone())
+        });
 
-        let content = content.push(widget::Space::new().width(Length::Fixed(0.0)).height(Length::Fixed(16.0)))
-            .push(update_section);
+        let content = content
+            .push(widget::divider::horizontal::default())
+            .push(update_row)
+            .push_maybe(status_label);
 
         self.core.applet.popup_container(content).into()
     }
@@ -578,6 +685,11 @@ pub enum Message {
     AlbumArtLoaded(Option<cosmic::iced::widget::image::Handle>),
     /// Send a command to the MPRIS player.
     PlayerCommand(crate::mpris::MprisCommand),
+    /// User toggled "Pause before playing next track".
+    TogglePauseNextTrack(bool),
+    /// The armed watcher detected the track change and already paused the
+    /// player; clear the one-shot arm.
+    ArmedPauseFired,
     /// Scroll timer tick — advance the marquee offset.
     ScrollTick,
     /// User changed the widget width via the slider (live, while dragging).
@@ -627,7 +739,33 @@ fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = 
         loop {
             let players = mpris::get_all_players().await;
             _ = channel.send(Message::MprisUpdate(players)).await;
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(MPRIS_POLL_INTERVAL_MS)).await;
+        }
+    })
+}
+
+/// Helper: while "pause before playing next track" is armed, watch the active
+/// player and pause it the moment it advances — far quicker than the 1s poller,
+/// so the next track never becomes audible. Keyed on (bus name, armed key) so it
+/// restarts if either changes and stops once disarmed.
+fn armed_watch_stream(key: &(String, String)) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    let (bus_name, armed_key) = key.clone();
+    cosmic::iced::stream::channel(1, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
+        mpris::pause_before_next_track(bus_name, armed_key).await;
+        _ = channel.send(Message::ArmedPauseFired).await;
+        // Idle until the subscription is dropped, so the watcher doesn't restart
+        // and immediately re-fire against the now-current track.
+        std::future::pending::<()>().await;
+    })
+}
+
+/// Helper: ~10 fps ticker used to smoothly advance the popup progress bar
+/// between MPRIS polls. Emits `Ignore` purely to trigger a re-render.
+fn progress_timer_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    cosmic::iced::stream::channel(4, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(PROGRESS_TICK_MS)).await;
+            _ = channel.send(Message::Ignore).await;
         }
     })
 }
@@ -635,7 +773,9 @@ fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = 
 /// Helper: creates the scroll timer stream based on the scroll speed level (1-10).
 fn scroll_timer_stream(speed: &u32) -> impl cosmic::iced::futures::Stream<Item = Message> {
     // level 1 = 300 ms/tick (slowest), level 10 = 30 ms/tick (fastest)
-    let tick_ms = (330u64).saturating_sub(*speed as u64 * 30).max(30);
+    let tick_ms = SCROLL_TICK_BASE_MS
+        .saturating_sub(*speed as u64 * SCROLL_TICK_STEP_MS)
+        .max(SCROLL_TICK_MIN_MS);
     cosmic::iced::stream::channel(4, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
         let tick_duration = std::time::Duration::from_millis(tick_ms);
         loop {
@@ -850,6 +990,27 @@ impl cosmic::Application for NowPlaying {
             subs.push(Subscription::run_with(self.config.scroll_speed, scroll_timer_stream));
         }
 
+        // 3a. Armed watcher — polls just the active player's metadata rapidly so
+        // the pause lands before the next track is audible. Only runs while
+        // armed, and stops as soon as it fires.
+        if self.pause_next_track {
+            if let (Some(bus), Some(armed)) =
+                (self.active_player_bus.clone(), self.armed_track_key.clone())
+            {
+                subs.push(Subscription::run_with((bus, armed), armed_watch_stream));
+            }
+        }
+
+        // 3b. Progress-bar smoothing — only while the media popup is open and a
+        // track with a known duration is actually playing.
+        if self.popup.is_some()
+            && self.popup_state == PopupState::MediaView
+            && self.playback_status == "Playing"
+            && self.length_us > 0
+        {
+            subs.push(Subscription::run_with(2u8, progress_timer_stream));
+        }
+
         // 4. Hover detection for the panel controls. The applet surface is
         // autosized to exactly the widget, so the pointer enters/leaves the
         // *surface* rather than crossing widget bounds — `mouse_area`'s own
@@ -879,6 +1040,7 @@ impl cosmic::Application for NowPlaying {
         match message {
             Message::TogglePopup => {
                 if let Some(p) = self.popup.take() {
+                    crate::debug_log!(crate::debug::UI, "popup closed (toggle)");
                     return destroy_popup(p);
                 }
                 let Some(main_id) = self.core.main_window_id() else {
@@ -893,6 +1055,20 @@ impl cosmic::Application for NowPlaying {
                     None,
                     None,
                 );
+                // The helper derives its anchor rect from `suggested_size()` —
+                // the default applet footprint (roughly one icon). This applet is
+                // autosized to `widget_width` instead, so without correcting the
+                // rect the popup anchors to a sliver at the widget's leading edge
+                // and appears offset. Match the rect to the real surface so the
+                // popup lines up with the applet.
+                let panel_height = self.core.applet.suggested_size(true).1
+                    + 2 * self.core.applet.suggested_padding(true).1;
+                popup_settings.positioner.anchor_rect = cosmic::iced::Rectangle {
+                    x: 0,
+                    y: 0,
+                    width: self.config.widget_width as i32,
+                    height: panel_height as i32,
+                };
                 popup_settings.positioner.size_limits = Limits::NONE
                     .min_height(100.0)
                     .max_height(600.0);
@@ -948,18 +1124,30 @@ impl cosmic::Application for NowPlaying {
 
                 let (title, artist, art_url, art_bytes, status, has_player, active_bus,
                      new_length_us, new_track_id, new_position_us, new_track_url,
-                     new_can_next, new_can_prev) =
+                     new_can_next, new_can_prev, new_next_track) =
                     if let Some(p) = active_player {
                         let bus = p.bus_name.clone();
                         (p.metadata.title, p.metadata.artist, p.metadata.art_url,
                          p.metadata.art_bytes, p.playback_status, true, Some(bus),
                          p.metadata.length_us, p.metadata.track_id, p.position_us,
-                         p.metadata.track_url, p.can_go_next, p.can_go_previous)
+                         p.metadata.track_url, p.can_go_next, p.can_go_previous,
+                         p.next_track.map(|n| (n.title, n.artist)))
                     } else {
                         (String::new(), String::new(), None, None,
                          "Stopped".to_string(), false, None, 0i64, String::new(), 0i64, None,
-                         true, true)
+                         true, true, None)
                     };
+
+                self.next_track = new_next_track;
+
+                // A robust identity for the newly-reported track (trackid → url →
+                // title+artist), used to detect real track transitions.
+                let new_key = track_key_of(
+                    &new_track_id,
+                    new_track_url.as_deref(),
+                    &title,
+                    &artist,
+                );
 
                 let changed = self.track_title != title
                     || self.track_artist != artist
@@ -980,10 +1168,21 @@ impl cosmic::Application for NowPlaying {
                     self.seek_value = 0.0;
                 }
                 self.length_us = new_length_us;
+
+                // "Pause before playing next track": the armed track is no longer
+                // the current one (the file finished and the player advanced) and
+                // we're now playing — so the next file has just started.
+                let armed_fired = self.pause_next_track
+                    && has_player
+                    && self.playback_status == "Playing"
+                    && self.armed_track_key.as_deref()
+                        .is_some_and(|armed| armed != new_key.as_str());
+
                 self.track_id = new_track_id;
                 // Don't clobber the slider while the user is dragging.
                 if !self.seeking {
                     self.position_us = new_position_us;
+                    self.position_instant = std::time::Instant::now();
                 }
 
                 if changed {
@@ -991,6 +1190,34 @@ impl cosmic::Application for NowPlaying {
                     self.track_artist = artist;
                     self.has_player = has_player;
                     self.rebuild_display_text();
+                }
+
+                let mut tasks: Vec<Task<cosmic::Action<Self::Message>>> = Vec::new();
+
+                if armed_fired {
+                    // Consume the one-shot arm and stop at the new track's start.
+                    self.pause_next_track = false;
+                    self.armed_track_key = None;
+                    if let Some(bus) = self.active_player_bus.clone()
+                        .or_else(|| self.players.first().map(|p| p.bus_name.clone()))
+                    {
+                        let track_id = self.track_id.clone();
+                        tasks.push(Task::perform(
+                            mpris::send_command(bus.clone(), mpris::MprisCommand::Pause),
+                            |_| cosmic::Action::App(Message::Ignore),
+                        ));
+                        // Rewind the just-started next track to 0 so pressing play
+                        // resumes from its beginning rather than ~1s in.
+                        if !track_id.is_empty() {
+                            tasks.push(Task::perform(
+                                mpris::send_command(
+                                    bus,
+                                    mpris::MprisCommand::SetPosition { track_id, position_us: 0 },
+                                ),
+                                |_| cosmic::Action::App(Message::Ignore),
+                            ));
+                        }
+                    }
                 }
 
                 if art_changed {
@@ -1001,8 +1228,12 @@ impl cosmic::Application for NowPlaying {
                         self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
                     } else if let Some(url) = art_url {
                         // For http:// and data: URLs, fetch asynchronously.
-                        return Task::done(cosmic::Action::App(Message::FetchAlbumArt(url)));
+                        tasks.push(Task::done(cosmic::Action::App(Message::FetchAlbumArt(url))));
                     }
+                }
+
+                if !tasks.is_empty() {
+                    return Task::batch(tasks);
                 }
             }
             Message::SelectPlayer(bus_name) => {
@@ -1050,7 +1281,7 @@ impl cosmic::Application for NowPlaying {
                 let gen = self.width_settle_gen;
                 return Task::perform(
                     async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(WIDTH_SETTLE_MS)).await;
                         gen
                     },
                     |gen| cosmic::Action::App(Message::WidthSettled(gen)),
@@ -1133,17 +1364,45 @@ impl cosmic::Application for NowPlaying {
                 self.popup_state = state;
             }
             Message::FetchAlbumArt(url) => {
-                return Task::perform(fetch_album_art(url), |h| cosmic::Action::App(h));
+                return Task::perform(fetch_album_art(url), cosmic::Action::App);
             }
             Message::AlbumArtLoaded(handle) => {
                 self.art_image = handle;
             }
             Message::PlayerCommand(cmd) => {
+                // Any explicit play/pause disarms the pending pause so the user
+                // can override it.
+                if matches!(cmd, mpris::MprisCommand::PlayPause) {
+                    self.pause_next_track = false;
+                    self.armed_track_key = None;
+                }
                 let target_bus = self.active_player_bus.clone()
                     .or_else(|| self.players.first().map(|p| p.bus_name.clone()));
                 if let Some(bus) = target_bus {
+                    crate::debug_log!(crate::debug::UI, "command {cmd:?} → {bus}");
                     return Task::perform(crate::mpris::send_command(bus, cmd), |_| cosmic::Action::App(Message::Ignore));
                 }
+            }
+            Message::TogglePauseNextTrack(checked) => {
+                self.pause_next_track = checked;
+                // Arm against the current track's identity so we fire when it
+                // changes — works even when the player omits a stable trackid.
+                self.armed_track_key = if checked && self.has_player {
+                    Some(self.current_track_key())
+                } else {
+                    None
+                };
+                crate::debug_log!(
+                    crate::debug::WATCH,
+                    "toggled={checked} has_player={} bus={:?} armed={:?}",
+                    self.has_player, self.active_player_bus, self.armed_track_key,
+                );
+            }
+            Message::ArmedPauseFired => {
+                // The watcher has already paused the player; just clear the arm.
+                crate::debug_log!(crate::debug::WATCH, "watcher reported fired → disarming");
+                self.pause_next_track = false;
+                self.armed_track_key = None;
             }
             Message::ConfigChanged(config) => {
                 if self.config != config {
@@ -1166,6 +1425,7 @@ impl cosmic::Application for NowPlaying {
                 if self.length_us > 0 && !self.track_id.is_empty() {
                     let target_us = (self.seek_value * self.length_us as f64) as i64;
                     self.position_us = target_us;
+                    self.position_instant = std::time::Instant::now();
                     let bus = self.active_player_bus.clone()
                         .or_else(|| self.players.first().map(|p| p.bus_name.clone()));
                     if let Some(bus_name) = bus {
@@ -1181,10 +1441,11 @@ impl cosmic::Application for NowPlaying {
                 }
             }
             Message::CheckUpdate => {
-                self.update_status = Some("Checking...".to_string());
+                self.update_status = Some(fl!("update-checking"));
                 return Task::perform(check_for_updates(), |s| cosmic::Action::App(Message::UpdateCheckComplete(s)));
             }
             Message::UpdateCheckComplete(status) => {
+                crate::debug_log!(crate::debug::UPDATE, "result: {status}");
                 self.update_status = Some(status);
             }
         }
@@ -1226,10 +1487,7 @@ async fn fetch_art_bytes(url: &str) -> Option<Vec<u8>> {
             }
         }
         let filename = std::path::Path::new(path).file_name()?.to_str()?;
-        for snap_name in [
-            "chromium", "chromium-browser", "firefox", "spotify",
-            "epiphany", "brave", "vivaldi", "opera",
-        ] {
+        for snap_name in SNAP_ART_PACKAGES {
             let snap_path = format!("/tmp/snap-private-tmp/snap.{snap_name}/tmp/{filename}");
             if let Ok(bytes) = tokio::fs::read(&snap_path).await {
                 return Some(bytes);
@@ -1248,65 +1506,101 @@ async fn fetch_art_bytes(url: &str) -> Option<Vec<u8>> {
             None
         }
     } else if url.starts_with("http") {
-        eprintln!("[art] http fetch: {url}");
+        crate::debug_log!(crate::debug::ART, "http fetch: {url}");
         let client = match reqwest::Client::builder()
-            .user_agent("cosmic-media-now-playing-applet/0.1")
+            .user_agent(USER_AGENT)
             .build()
         {
             Ok(c) => c,
-            Err(e) => { eprintln!("[art] client build error: {e}"); return None; }
+            Err(e) => { crate::debug_log!(crate::debug::ART, "client build error: {e}"); return None; }
         };
         let resp = match client.get(url).send().await {
             Ok(r) => r,
-            Err(e) => { eprintln!("[art] http send error: {e}"); return None; }
+            Err(e) => { crate::debug_log!(crate::debug::ART, "http send error: {e}"); return None; }
         };
         let status = resp.status();
         let bytes = match resp.bytes().await {
             Ok(b) => b,
-            Err(e) => { eprintln!("[art] http body error: {e}"); return None; }
+            Err(e) => { crate::debug_log!(crate::debug::ART, "http body error: {e}"); return None; }
         };
-        eprintln!("[art] http {status} → {} bytes", bytes.len());
+        crate::debug_log!(crate::debug::ART, "http {status} → {} bytes", bytes.len());
         Some(bytes.to_vec())
     } else {
-        eprintln!("[art] unsupported url scheme: {url}");
+        crate::debug_log!(crate::debug::ART, "unsupported url scheme: {url}");
         None
     }
 }
 
 async fn check_for_updates() -> String {
     let client = match reqwest::Client::builder()
-        .user_agent("cosmic-media-now-playing-applet/0.1")
+        .user_agent(USER_AGENT)
         .build()
     {
         Ok(c) => c,
-        Err(_) => return "Failed to create HTTP client.".to_string(),
+        Err(_) => return fl!("update-error-client"),
     };
 
-    let url = "https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/Cargo.toml";
-    let resp = match client.get(url).send().await {
+    let resp = match client.get(UPDATE_MANIFEST_URL).send().await {
         Ok(r) => r,
-        Err(_) => return "Failed to connect to GitHub.".to_string(),
+        Err(_) => return fl!("update-error-connect"),
     };
 
     let text = match resp.text().await {
         Ok(t) => t,
-        Err(_) => return "Failed to read response.".to_string(),
+        Err(_) => return fl!("update-error-read"),
     };
 
-    for line in text.lines() {
-        if line.starts_with("version = ") {
-            let parts: Vec<&str> = line.split('"').collect();
-            if parts.len() >= 2 {
-                let remote_version = parts[1];
-                let local_version = env!("CARGO_PKG_VERSION");
-                if remote_version == local_version {
-                    return format!("Up to date (v{})", local_version);
-                } else {
-                    return format!("Update available: v{} (Current: v{})", remote_version, local_version);
+    let Some(remote_version) = parse_package_version(&text) else {
+        return fl!("update-error-parse");
+    };
+    let local_version = env!("CARGO_PKG_VERSION");
+
+    // Only report an update when the remote is genuinely newer — a local build
+    // that runs ahead of `main` should not be told to "update" backwards.
+    if compare_versions(&remote_version, local_version) == std::cmp::Ordering::Greater {
+        fl!("update-available", remote = remote_version, local = local_version)
+    } else {
+        fl!("update-uptodate", version = local_version)
+    }
+}
+
+/// Extract `version` from the `[package]` section of a Cargo.toml.
+///
+/// Scoped to `[package]` so a dependency's `version = "…"` (several of which sit
+/// at column 0 in this manifest) can never be mistaken for the package version.
+fn parse_package_version(toml: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in toml.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package {
+            if let Some(rest) = line.strip_prefix("version") {
+                if let Some(value) = rest.trim_start().strip_prefix('=') {
+                    return Some(value.trim().trim_matches('"').to_string());
                 }
             }
         }
     }
+    None
+}
 
-    "Could not parse version from main branch.".to_string()
+/// Compare dotted numeric versions component by component (1.10.0 > 1.9.0),
+/// which a plain string comparison would get wrong.
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> {
+        v.split(['.', '-', '+'])
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let ord = a.get(i).copied().unwrap_or(0).cmp(&b.get(i).copied().unwrap_or(0));
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    std::cmp::Ordering::Equal
 }

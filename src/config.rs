@@ -4,17 +4,12 @@ use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, Cosmi
 use serde::{Deserialize, Serialize};
 
 /// How the track information is formatted for display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DisplayFormat {
     TitleOnly,
+    #[default]
     ArtistTitle,
     TitleArtist,
-}
-
-impl Default for DisplayFormat {
-    fn default() -> Self {
-        Self::ArtistTitle
-    }
 }
 
 impl DisplayFormat {
@@ -32,20 +27,15 @@ impl DisplayFormat {
 }
 
 /// Which leading element to show beside the scrolling text in the panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PanelIcon {
     /// Album artwork thumbnail, falling back to the music-note icon when none.
+    #[default]
     AlbumArt,
     /// Always the generic music-note icon.
     MusicNote,
     /// No leading element at all (takes up no space).
     None,
-}
-
-impl Default for PanelIcon {
-    fn default() -> Self {
-        Self::AlbumArt
-    }
 }
 
 /// Persistent configuration for the Now Playing applet.
