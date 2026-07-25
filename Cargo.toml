@@ -5,7 +5,6 @@ edition = "2021"
 license = "GPL-3.0"
 description = "A COSMIC DE panel applet that displays the currently playing media track using MPRIS"
 repository = "https://github.com/stldave314/cosmic-media-now-playing-applet"
-authors = ["Dave <stldave314@users.noreply.github.com>"]
 
 [dependencies]
 futures-util = "0.3"
@@ -43,6 +42,7 @@ strip = true
 [package.metadata.deb]
 maintainer = "Dave <stldave314@users.noreply.github.com>"
 copyright = "2026, Dave"
+license-file = ["LICENSE", "0"]
 section = "utils"
 priority = "optional"
 depends = "$auto"
