@@ -134,7 +134,10 @@ do_uninstall() {
         if [ -f "${f}" ]; then
             info "Removing ${f}"
             sudo rm -f "${f}"
-            ((removed++))
+            # NB: not `((removed++))` — post-increment from 0 yields an
+            # arithmetic result of 0, which bash reports as exit status 1 and
+            # `set -e` then treats as a fatal error, aborting mid-uninstall.
+            removed=$((removed + 1))
         else
             warn "Not found (skipped): ${f}"
         fi
