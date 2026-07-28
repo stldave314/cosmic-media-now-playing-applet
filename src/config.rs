@@ -68,6 +68,10 @@ pub struct NowPlayingConfig {
     /// Gap in pixels between the leading icon/art and the scrolling title
     /// (0..=40). Only meaningful when `panel_icon` is not `PanelIcon::None`.
     pub icon_spacing: u32,
+    /// Blank the panel title after playback has been stopped this many minutes
+    /// (0..=60), so a long-paused track doesn't scroll indefinitely. The album
+    /// art stays. 0 disables the behaviour.
+    pub idle_clear_minutes: u32,
 }
 
 impl Default for NowPlayingConfig {
@@ -86,6 +90,7 @@ impl Default for NowPlayingConfig {
             panel_art_size: 16,
             show_hover_controls: true,
             icon_spacing: 6,
+            idle_clear_minutes: 5,
         }
     }
 }

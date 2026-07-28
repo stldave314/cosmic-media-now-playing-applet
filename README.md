@@ -244,6 +244,7 @@ Below the playback controls is a switch that arms a **one-shot stop**: the curre
 | **Album Art Size** | 12 – 48 px | 16 px | Size of the panel thumbnail (and music-note fallback) |
 | **Icon Spacing** | 0 – 40 px | 6 px | Gap between icon/art and title; hidden when Panel Icon is "No Icon" |
 | **Show Controls on Hover** | On / Off | On | Requires a Panel Icon other than "No Icon"; prev/next appear only when supported and there's room |
+| **Clear Title When Idle** | Off, 1 – 60 min | 5 min | Blanks the panel title once playback has been stopped this long, so a long-paused track stops scrolling. Album art stays; playing again or changing track brings it back |
 
 ### Config File Location
 

@@ -1,23 +1,49 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48"
+     role="img" aria-label="Now Playing">
   <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#7c3aed;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#2563eb;stop-opacity:1" />
+    <!-- Diagonal violet-to-blue field, in keeping with COSMIC's accent palette. -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0"    stop-color="#8b5cf6"/>
+      <stop offset="0.55" stop-color="#6366f1"/>
+      <stop offset="1"    stop-color="#2563eb"/>
     </linearGradient>
+
+    <!-- Light falling from above, so the tile reads as a surface rather than a
+         flat swatch. Kept faint: visible at 48px, imperceptible at 16px. -->
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1"   stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
   </defs>
-  <rect width="48" height="48" rx="10" fill="url(#grad)"/>
-  <!-- Music note -->
-  <g fill="#ffffff" transform="translate(12, 8)">
-    <!-- Note head 1 -->
-    <ellipse cx="6" cy="28" rx="5" ry="3.5" transform="rotate(-20 6 28)"/>
-    <!-- Note head 2 -->
-    <ellipse cx="20" cy="24" rx="5" ry="3.5" transform="rotate(-20 20 24)"/>
-    <!-- Stem 1 -->
-    <rect x="10" y="4" width="2.5" height="25"/>
-    <!-- Stem 2 -->
-    <rect x="24" y="0" width="2.5" height="25"/>
-    <!-- Beam -->
-    <rect x="10" y="2" width="16.5" height="3" transform="rotate(-10 10 4)"/>
+
+  <rect width="48" height="48" rx="11" fill="url(#bg)"/>
+  <rect width="48" height="48" rx="11" fill="url(#sheen)"/>
+
+  <!-- Deliberately no filter effects: icon renderers vary in their support for
+       them, and a dropped filter can take the whole group with it. Gradients
+       and strokes are plain SVG 1.1 and render everywhere. -->
+  <g>
+    <!-- Stems and beam are one continuous stroke with round caps and joins, so
+         every terminal is curved and the beam meets the stems seamlessly. The
+         previous icon butted separate rectangles together, which is what left
+         the hard corners and misaligned joints. -->
+    <path d="M18.6 32.2 V14.4 L32.9 11.2 V29"
+          fill="none" stroke="#ffffff" stroke-width="3.1"
+          stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- The beam re-stroked thicker over the same span, for a proper
+         note silhouette rather than a hairline. -->
+    <path d="M18.6 14.4 L32.9 11.2"
+          fill="none" stroke="#ffffff" stroke-width="5.2"
+          stroke-linecap="round"/>
+
+    <!-- Note heads, tilted the way engraved notation sets them. -->
+    <ellipse cx="14.6" cy="32.4" rx="5.2" ry="4.05"
+             transform="rotate(-20 14.6 32.4)" fill="#ffffff"/>
+    <ellipse cx="28.9" cy="29.2" rx="5.2" ry="4.05"
+             transform="rotate(-20 28.9 29.2)" fill="#ffffff"/>
   </g>
 </svg>

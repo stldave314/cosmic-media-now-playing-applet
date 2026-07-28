@@ -28,3 +28,4 @@ update-available = Доступно обновление: v{ $remote } (теку
 update-error-client = Не удалось создать HTTP-клиент.
 update-error-connect = Не удалось подключиться к GitHub.
 update-error-parse = Не удалось разобрать сведения о версии.
+idle-clear = Скрывать название при простое

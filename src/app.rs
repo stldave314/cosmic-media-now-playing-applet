@@ -97,6 +97,10 @@ pub struct NowPlaying {
     armed_track_key: Option<String>,
     /// The next queued track (title, artist), if the player exposes TrackList.
     next_track: Option<(String, String)>,
+    /// When playback last stopped being `Playing`. Used to blank the panel title
+    /// after `idle_clear_minutes` so a long-paused track stops scrolling.
+    /// `None` while playing; reset when the track changes.
+    not_playing_since: Option<std::time::Instant>,
     /// Status message for the version update check.
     update_status: Option<String>,
 }
@@ -152,6 +156,7 @@ impl Default for NowPlaying {
             pause_next_track: false,
             armed_track_key: None,
             next_track: None,
+            not_playing_since: None,
             update_status: None,
         }
     }
@@ -247,6 +252,11 @@ impl NowPlaying {
 
     /// Returns the visible portion of the display text for the marquee effect.
     fn visible_text(&self) -> String {
+        // Blanked after a long pause — the art stays, the title doesn't.
+        if self.idle_text_cleared() {
+            return String::new();
+        }
+
         let max_chars = self.max_visible_chars();
 
         if self.display_text.chars().count() <= max_chars {
@@ -270,7 +280,22 @@ impl NowPlaying {
 
     /// Whether the text overflows and needs scrolling.
     fn needs_scroll(&self) -> bool {
-        self.display_text.chars().count() > self.max_visible_chars()
+        !self.idle_text_cleared() && self.display_text.chars().count() > self.max_visible_chars()
+    }
+
+    /// Whether the panel title should be blanked because playback has been
+    /// stopped longer than `idle_clear_minutes`.
+    ///
+    /// Stops a long-paused track scrolling forever. The album art is left alone,
+    /// so the applet still shows what's loaded; playing again or changing track
+    /// clears the countdown and brings the title back.
+    fn idle_text_cleared(&self) -> bool {
+        let minutes = self.config.idle_clear_minutes;
+        if minutes == 0 {
+            return false;
+        }
+        self.not_playing_since
+            .is_some_and(|since| since.elapsed().as_secs() >= u64::from(minutes) * 60)
     }
 
     /// Persist the current config to disk via cosmic-config.
@@ -578,6 +603,25 @@ impl NowPlaying {
                 )
             });
 
+        // How long playback must be stopped before the title is blanked.
+        let idle_clear_section = labeled_slider(
+            if self.config.idle_clear_minutes == 0 {
+                format!("{}: {}", fl!("idle-clear"), fl!("scroll-off"))
+            } else {
+                format!(
+                    "{}: {} min",
+                    fl!("idle-clear"),
+                    self.config.idle_clear_minutes
+                )
+            },
+            widget::slider(
+                0.0..=60.0,
+                self.config.idle_clear_minutes as f32,
+                Message::SetIdleClear,
+            )
+            .step(1.0_f32),
+        );
+
         let panel_icon_label = fl!("panel-icon");
         let panel_icon_options: Vec<String> = vec![
             fl!("panel-icon-album-art"),
@@ -647,6 +691,7 @@ impl NowPlaying {
             .push(labeled_control(panel_icon_label, panel_icon_dropdown))
             .push(labeled_slider(art_size_label, art_size_slider))
             .push_maybe(icon_spacing_section)
+            .push(idle_clear_section)
             .push(hover_toggle);
 
         // Version and the update button share one line; the result only takes up
@@ -718,6 +763,8 @@ pub enum Message {
     SetPanelArtSize(f32),
     /// User changed the gap between the icon and the title.
     SetIconSpacing(f32),
+    /// User changed how long playback must be stopped before the title blanks.
+    SetIdleClear(f32),
     /// User toggled whether playback controls appear on panel hover.
     SetHoverControls(bool),
     /// Pointer moved over a surface (carries the surface's window id). A move on
@@ -1166,6 +1213,15 @@ impl cosmic::Application for NowPlaying {
                 self.can_go_next = new_can_next;
                 self.can_go_previous = new_can_prev;
 
+                // Countdown to blanking the panel title. Playing clears it; a
+                // track change restarts it, so a newly selected track is shown
+                // for the full period even if the player is still paused.
+                if self.playback_status == "Playing" || !has_player {
+                    self.not_playing_since = None;
+                } else if changed || self.not_playing_since.is_none() {
+                    self.not_playing_since = Some(std::time::Instant::now());
+                }
+
                 self.track_url = new_track_url;
 
                 // Update position/duration. When the track changes, reset seek state.
@@ -1347,6 +1403,10 @@ impl cosmic::Application for NowPlaying {
                 self.scroll_offset = 0;
                 self.save_config();
             }
+            Message::SetIdleClear(minutes) => {
+                self.config.idle_clear_minutes = minutes as u32;
+                self.save_config();
+            }
             Message::SetHoverControls(enabled) => {
                 self.config.show_hover_controls = enabled;
                 if !enabled {
@@ -1381,6 +1441,16 @@ impl cosmic::Application for NowPlaying {
                 if matches!(cmd, mpris::MprisCommand::PlayPause) {
                     self.pause_next_track = false;
                     self.armed_track_key = None;
+                }
+                // Bring a blanked title straight back rather than waiting for
+                // the next poll to notice playback resumed.
+                if matches!(
+                    cmd,
+                    mpris::MprisCommand::PlayPause
+                        | mpris::MprisCommand::Next
+                        | mpris::MprisCommand::Previous
+                ) {
+                    self.not_playing_since = None;
                 }
                 let target_bus = self.active_player_bus.clone()
                     .or_else(|| self.players.first().map(|p| p.bus_name.clone()));

@@ -28,3 +28,4 @@ update-available = 有可用更新：v{ $remote }（当前：v{ $local }）
 update-error-client = 无法创建 HTTP 客户端。
 update-error-connect = 无法连接到 GitHub。
 update-error-parse = 无法解析版本信息。
+idle-clear = 空闲时清除标题

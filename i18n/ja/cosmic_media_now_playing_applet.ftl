@@ -28,3 +28,4 @@ update-available = 更新があります: v{ $remote } (現在: v{ $local })
 update-error-client = HTTP クライアントを作成できませんでした。
 update-error-connect = GitHub に接続できませんでした。
 update-error-parse = バージョン情報を解析できませんでした。
+idle-clear = 停止中にタイトルを消去

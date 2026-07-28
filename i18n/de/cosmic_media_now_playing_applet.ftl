@@ -28,3 +28,4 @@ update-available = Update verfügbar: v{ $remote } (aktuell: v{ $local })
 update-error-client = HTTP-Client konnte nicht erstellt werden.
 update-error-connect = Verbindung zu GitHub fehlgeschlagen.
 update-error-parse = Versionsinformationen konnten nicht gelesen werden.
+idle-clear = Titel bei Inaktivität ausblenden

@@ -1,0 +1,21 @@
+{
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "procMacro": {
+          "ignored": {
+            // `fl!` validates message ids against the .ftl files at macro
+            // expansion time. rust-analyzer caches that expansion, so newly
+            // added keys keep being reported as missing long after `cargo
+            // check` accepts them — the errors survive a server restart.
+            //
+            // Skipping expansion of this one macro removes the false errors.
+            // The real validation still happens at build time, where it can
+            // actually see the current files.
+            "i18n-embed-fl": ["fl"]
+          }
+        }
+      }
+    }
+  }
+}
