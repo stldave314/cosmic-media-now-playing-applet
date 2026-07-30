@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic::cosmic_config::{self, cosmic_config_derive::CosmicConfigEntry, CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
@@ -68,10 +68,32 @@ pub struct NowPlayingConfig {
     /// Gap in pixels between the leading icon/art and the scrolling title
     /// (0..=40). Only meaningful when `panel_icon` is not `PanelIcon::None`.
     pub icon_spacing: u32,
-    /// Blank the panel title after playback has been stopped this many minutes
-    /// (0..=60), so a long-paused track doesn't scroll indefinitely. The album
-    /// art stays. 0 disables the behaviour.
+    /// Stop the applet automatically once playback has been idle this many
+    /// minutes (0..=60), clearing the title and album art so a finished session
+    /// stops occupying the panel — the same result as pressing STOP. `0`
+    /// disables it, which is the default: the applet keeps showing the last
+    /// track until the user stops it explicitly.
     pub idle_clear_minutes: u32,
+}
+
+impl NowPlayingConfig {
+    /// Clamp every numeric field to its documented range.
+    ///
+    /// The sliders can only produce in-range values, but config also arrives
+    /// from the on-disk file via the cosmic-config watcher — which anyone (or
+    /// any tool) can hand-edit — so the ranges are enforced at the boundary
+    /// rather than trusted.
+    pub fn clamped(mut self) -> Self {
+        self.widget_width = self.widget_width.clamp(100, 500);
+        self.scroll_speed = self.scroll_speed.min(10);
+        self.top_margin = self.top_margin.clamp(-10, 20);
+        self.left_margin = self.left_margin.clamp(0, 40);
+        self.right_margin = self.right_margin.clamp(0, 40);
+        self.panel_art_size = self.panel_art_size.clamp(12, 48);
+        self.icon_spacing = self.icon_spacing.min(40);
+        self.idle_clear_minutes = self.idle_clear_minutes.min(60);
+        self
+    }
 }
 
 impl Default for NowPlayingConfig {
@@ -90,7 +112,9 @@ impl Default for NowPlayingConfig {
             panel_art_size: 16,
             show_hover_controls: true,
             icon_spacing: 6,
-            idle_clear_minutes: 5,
+            // Off by default: stopping hides the applet, and that shouldn't
+            // happen to anyone who didn't ask for it.
+            idle_clear_minutes: 0,
         }
     }
 }

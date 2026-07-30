@@ -29,3 +29,5 @@ update-error-client = Не удалось создать HTTP-клиент.
 update-error-connect = Не удалось подключиться к GitHub.
 update-error-parse = Не удалось разобрать сведения о версии.
 idle-clear = Скрывать название при простое
+idle-clear-minutes = { $minutes } мин
+unknown-player = Неизвестный проигрыватель

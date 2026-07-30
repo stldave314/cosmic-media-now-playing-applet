@@ -1,8 +1,8 @@
 [package]
 name = "cosmic-media-now-playing-applet"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
-license = "GPL-3.0"
+license = "GPL-3.0-only"
 description = "A COSMIC DE panel applet that displays the currently playing media track using MPRIS"
 repository = "https://github.com/stldave314/cosmic-media-now-playing-applet"
 
@@ -21,6 +21,9 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }
 reqwest = "0.13.2"
 base64 = "0.23"
+# Only for O_NONBLOCK/O_NOCTTY/O_NOFOLLOW open(2) flags, which must come from
+# libc so they are correct on every architecture.
+libc = "0.2"
 
 [dependencies.i18n-embed]
 version = "0.16"

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Compile-time tuning values for the applet, gathered in one place.
 //!
@@ -74,7 +74,25 @@ pub const ARMED_WATCH_POLL_MS: u64 = 50;
 pub const ARMED_WATCH_MAX_SLEEP_MS: u64 = 500;
 
 
+// ── Untrusted-input limits ──────────────────────────────────────────────────
+// Album art URLs (file://, data:, http(s)://) come from MPRIS metadata, which
+// any process on the session bus can publish — so every art source is treated
+// as hostile and bounded. Without caps, a peer could hand the applet
+// /dev/zero, a FIFO, or an endless HTTP body and wedge or OOM it.
+
+/// Largest album-art file read from disk. Real cover art tops out around a few
+/// megabytes; anything bigger is refused rather than buffered.
+pub const MAX_ART_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Largest album-art HTTP download, enforced while streaming — a response that
+/// keeps going past this is abandoned, not buffered.
+pub const MAX_ART_HTTP_BYTES: u64 = 20 * 1024 * 1024;
+
 // ── Network ─────────────────────────────────────────────────────────────────
+
+/// Total per-request timeout for album-art downloads and the update check, so
+/// a stalled server can't pin a background task open indefinitely.
+pub const HTTP_TIMEOUT_SECS: u64 = 15;
 
 /// User agent sent with album-art and update requests. Derived from the package
 /// metadata so it can't drift out of date.

@@ -29,3 +29,5 @@ update-error-client = 无法创建 HTTP 客户端。
 update-error-connect = 无法连接到 GitHub。
 update-error-parse = 无法解析版本信息。
 idle-clear = 空闲时清除标题
+idle-clear-minutes = { $minutes } 分钟
+unknown-player = 未知播放器

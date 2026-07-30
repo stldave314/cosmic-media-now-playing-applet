@@ -29,3 +29,5 @@ update-error-client = HTTP クライアントを作成できませんでした�
 update-error-connect = GitHub に接続できませんでした。
 update-error-parse = バージョン情報を解析できませんでした。
 idle-clear = 停止中にタイトルを消去
+idle-clear-minutes = { $minutes }分
+unknown-player = 不明なプレーヤー

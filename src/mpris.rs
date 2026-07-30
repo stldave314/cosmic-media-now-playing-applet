@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Pure-Rust MPRIS client using zbus D-Bus proxies.
 //!
@@ -7,39 +7,116 @@
 //! `org.mpris.MediaPlayer2.Player` interface.
 
 use crate::constants::{
-    ARMED_WATCH_MAX_SLEEP_MS, ARMED_WATCH_POLL_MS, PAUSE_LEAD_US, SNAP_ART_PACKAGES,
-    YOUTUBE_THUMBNAIL_URL,
+    ARMED_WATCH_MAX_SLEEP_MS, ARMED_WATCH_POLL_MS, MAX_ART_FILE_BYTES, PAUSE_LEAD_US,
+    SNAP_ART_PACKAGES, YOUTUBE_THUMBNAIL_URL,
 };
 use crate::debug_log;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use zbus::Connection;
 
+/// The session-bus connection shared by every MPRIS call in the process.
+///
+/// `zbus::Connection::session()` performs a full connect + handshake on every
+/// call, and the applet talks to the bus at least once a second — so the
+/// connection is established once and reused. A failed attempt is not cached;
+/// the next call retries.
+async fn session_bus() -> Option<&'static Connection> {
+    static SESSION: tokio::sync::OnceCell<Connection> = tokio::sync::OnceCell::const_new();
+    SESSION.get_or_try_init(Connection::session).await.ok()
+}
+
 /// Extract a YouTube thumbnail URL from a track URL, if it's a YouTube video.
+///
+/// The URL is untrusted (any bus peer can publish metadata), so it goes through
+/// a real URL parse — substring matching would both misfire on look-alike hosts
+/// and, worse, mix byte indices between a lowercased copy and the original,
+/// which can split a multi-byte character and panic. The extracted id is then
+/// held to YouTube's actual id alphabet before being spliced into the
+/// thumbnail URL, so nothing else can ride along in the request path.
 fn youtube_thumbnail_url(url: &str) -> Option<String> {
-    let lower = url.to_lowercase();
-    // youtube.com/watch?v=ID (also matches www., music., m., youtube-nocookie.com)
-    if lower.contains("youtube.com/watch") || lower.contains("youtube-nocookie.com/watch") {
-        if let Some(query) = url.split('?').nth(1) {
-            for param in query.split('&') {
-                if let Some(video_id) = param.strip_prefix("v=") {
-                    let video_id = video_id.split('&').next().unwrap_or(video_id);
-                    if !video_id.is_empty() {
-                        return Some(YOUTUBE_THUMBNAIL_URL.replace("{id}", video_id));
-                    }
-                }
-            }
-        }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
     }
-    // youtu.be/ID short links
-    if let Some(idx) = lower.find("youtu.be/") {
-        let path = &url[idx + "youtu.be/".len()..];
-        let video_id = path.split(&['?', '&', '#'][..]).next()?;
-        if !video_id.is_empty() {
-            return Some(YOUTUBE_THUMBNAIL_URL.replace("{id}", video_id));
-        }
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+
+    let video_id: String = if host == "youtu.be" {
+        // youtu.be/ID short links: the id is the first path segment.
+        parsed.path_segments()?.next()?.to_string()
+    } else if (host == "youtube.com"
+        || host.ends_with(".youtube.com")
+        || host == "youtube-nocookie.com"
+        || host.ends_with(".youtube-nocookie.com"))
+        && parsed.path() == "/watch"
+    {
+        // youtube.com/watch?v=ID (also music., m., nocookie variants).
+        parsed
+            .query_pairs()
+            .find(|(key, _)| key == "v")
+            .map(|(_, value)| value.into_owned())?
+    } else {
+        return None;
+    };
+
+    let is_id_char = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+    if video_id.is_empty() || !video_id.bytes().all(is_id_char) {
+        return None;
     }
-    None
+    Some(YOUTUBE_THUMBNAIL_URL.replace("{id}", &video_id))
+}
+
+/// Resolve a `file://` art URL to an absolute filesystem path.
+///
+/// Uses the URL parser rather than prefix-stripping so percent-encoding
+/// (`%20` and friends) decodes correctly, dot segments are normalized, and
+/// only genuinely local URLs (empty or `localhost` authority) are accepted.
+fn file_url_to_path(url: &str) -> Option<PathBuf> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.scheme() != "file" {
+        return None;
+    }
+    parsed.to_file_path().ok()
+}
+
+/// Read a file that is expected to be album art, refusing anything that isn't
+/// a bounded regular file.
+///
+/// The path ultimately comes from MPRIS metadata, which any process on the
+/// session bus can publish — so it must be assumed hostile. Unchecked, a peer
+/// could point us at `/dev/zero` (reads forever, OOM), a FIFO (the read never
+/// returns and pins a blocking-pool thread on every poll), or an enormous
+/// file. `O_NONBLOCK` keeps even the `open()` from blocking on a FIFO with no
+/// writer, and has no effect on regular-file reads; `O_NOCTTY` prevents a tty
+/// device path from being acquired as a controlling terminal. The size is
+/// checked on the opened file (no stat/open race) and enforced again while
+/// reading in case the file grows.
+async fn read_regular_file_capped(path: &Path) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .await
+        .ok()?;
+    let meta = file.metadata().await.ok()?;
+    if !meta.is_file() || meta.len() > MAX_ART_FILE_BYTES {
+        return None;
+    }
+
+    let mut bytes = Vec::new();
+    // take() bounds the read even if the file grew past the cap after the
+    // metadata check; landing over the cap means "too big", not "truncate".
+    file.take(MAX_ART_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    if bytes.len() as u64 > MAX_ART_FILE_BYTES {
+        return None;
+    }
+    Some(bytes)
 }
 
 /// Read a media player's art file from any sandbox by going through the player's
@@ -53,34 +130,51 @@ fn youtube_thumbnail_url(url: &str) -> Option<String> {
 /// path does not. This works uniformly for every sandbox technology.
 ///
 /// We try the literal path first (native packages, unsandboxed players), then
-/// the per-process namespace, then a Snap-specific fallback in case AppArmor
-/// blocks /proc traversal.
+/// the namespace of the player that actually published the URL — never a scan
+/// of every process — then a Snap-specific fallback in case AppArmor blocks
+/// /proc traversal.
 async fn read_art_file(
     dbus_proxy: &zbus::fdo::DBusProxy<'_>,
-    bus_name: &str,
-    path: &str,
+    bus_name: Option<&str>,
+    url: &str,
 ) -> Option<Vec<u8>> {
-    if let Ok(bytes) = tokio::fs::read(path).await {
+    let path = file_url_to_path(url)?;
+
+    if let Some(bytes) = read_regular_file_capped(&path).await {
         return Some(bytes);
     }
 
-    if let Ok(bus) = zbus::names::BusName::try_from(bus_name) {
-        if let Ok(pid) = dbus_proxy.get_connection_unix_process_id(bus).await {
-            let proc_path = format!("/proc/{pid}/root{path}");
-            if let Ok(bytes) = tokio::fs::read(&proc_path).await {
-                return Some(bytes);
+    if let Some(bus_name) = bus_name {
+        if let Ok(rel) = path.strip_prefix("/") {
+            if let Ok(bus) = zbus::names::BusName::try_from(bus_name) {
+                if let Ok(pid) = dbus_proxy.get_connection_unix_process_id(bus).await {
+                    let proc_path = PathBuf::from(format!("/proc/{pid}/root")).join(rel);
+                    if let Some(bytes) = read_regular_file_capped(&proc_path).await {
+                        return Some(bytes);
+                    }
+                }
             }
         }
     }
 
-    let filename = Path::new(path).file_name()?.to_str()?;
+    let filename = path.file_name()?.to_str()?;
     for snap_name in SNAP_ART_PACKAGES {
-        let snap_path = format!("/tmp/snap-private-tmp/snap.{snap_name}/tmp/{filename}");
-        if let Ok(bytes) = tokio::fs::read(&snap_path).await {
+        let snap_path =
+            PathBuf::from(format!("/tmp/snap-private-tmp/snap.{snap_name}/tmp")).join(filename);
+        if let Some(bytes) = read_regular_file_capped(&snap_path).await {
             return Some(bytes);
         }
     }
     None
+}
+
+/// Fallback art read for `file://` URLs, used by the UI when the bytes weren't
+/// captured during the poll (e.g. switching players after startup). Same
+/// lookup as the poll-time read, scoped to the player that published the URL.
+pub async fn read_art_url_for_player(bus_name: Option<&str>, url: &str) -> Option<Vec<u8>> {
+    let connection = session_bus().await?;
+    let dbus_proxy = zbus::fdo::DBusProxy::new(connection).await.ok()?;
+    read_art_file(&dbus_proxy, bus_name, url).await
 }
 
 /// Metadata retrieved from an MPRIS player.
@@ -230,11 +324,11 @@ pub fn track_key(track_id: &str, track_url: Option<&str>, title: &str, artist: &
 pub async fn pause_before_next_track(bus_name: String, armed_key: String) {
     debug_log!(crate::debug::WATCH, "start bus={bus_name} armed_key={armed_key:?}");
 
-    let Ok(connection) = Connection::session().await else {
+    let Some(connection) = session_bus().await else {
         debug_log!(crate::debug::WATCH, "ABORT: no session bus");
         return;
     };
-    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(&connection)
+    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
         .destination(bus_name.as_str())
         .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
         .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"));
@@ -422,12 +516,19 @@ async fn fetch_next_track(
 }
 
 /// Find all active MPRIS media players and return their information.
-pub async fn get_all_players() -> Vec<PlayerInfo> {
+///
+/// `art_cache` maps a bus name to the (art URL, bytes) pair read on a previous
+/// poll. `file://` art would otherwise be re-read from disk every second even
+/// though the UI only consumes it when the URL changes; the cache keeps the
+/// per-poll cost at zero for an unchanged track. Only successful reads are
+/// cached — a miss retries next poll, since browsers sometimes write the art
+/// file shortly after publishing the metadata.
+pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>) -> Vec<PlayerInfo> {
     let mut players = Vec::new();
-    let Ok(connection) = Connection::session().await else {
+    let Some(connection) = session_bus().await else {
         return players;
     };
-    let Ok(dbus_proxy) = zbus::fdo::DBusProxy::new(&connection).await else {
+    let Ok(dbus_proxy) = zbus::fdo::DBusProxy::new(connection).await else {
         return players;
     };
 
@@ -441,7 +542,7 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
         }
         let bus_name = name.to_string();
 
-        let Ok(root_builder) = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(&connection)
+        let Ok(root_builder) = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
             .destination(bus_name.as_str())
             .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
             .and_then(|b| b.interface("org.mpris.MediaPlayer2"))
@@ -453,9 +554,9 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
             .await
             .ok()
             .and_then(|v| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
-            .unwrap_or_else(|| "Unknown Player".to_string());
+            .unwrap_or_else(|| crate::fl!("unknown-player"));
 
-        let Ok(player_builder) = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(&connection)
+        let Ok(player_builder) = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
             .destination(bus_name.as_str())
             .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
             .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"))
@@ -478,19 +579,30 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
                 .unwrap_or(0);
 
             // Read file:// art immediately — browsers delete the temp file shortly
-            // after writing it, so a deferred async fetch always misses it.
-            let art_bytes = if let Some(path) = art_url.as_deref().and_then(|u| u.strip_prefix("file://")) {
-                read_art_file(&dbus_proxy, &bus_name, path).await
-            } else {
-                None
+            // after writing it, so a deferred async fetch always misses it. The
+            // cache short-circuits the disk read while the URL stays the same.
+            let art_bytes = match art_url.as_deref() {
+                Some(url) if url.starts_with("file:") => {
+                    match art_cache.get(&bus_name) {
+                        Some((cached_url, bytes)) if cached_url == url => Some(bytes.clone()),
+                        _ => {
+                            let read = read_art_file(&dbus_proxy, Some(&bus_name), url).await;
+                            if let Some(bytes) = &read {
+                                art_cache
+                                    .insert(bus_name.clone(), (url.to_string(), bytes.clone()));
+                            }
+                            read
+                        }
+                    }
+                }
+                _ => None,
             };
 
             // When file:// art is inaccessible (e.g., Flatpak sandbox) and the track
             // is a YouTube video, substitute the public thumbnail URL so the HTTP
             // fetch path in app.rs can load it without touching the filesystem.
-            let original_art_url = art_url.clone();
             let art_url = if art_bytes.is_none()
-                && art_url.as_deref().is_none_or(|u| u.starts_with("file://"))
+                && art_url.as_deref().is_none_or(|u| u.starts_with("file:"))
             {
                 track_url.as_deref()
                     .and_then(youtube_thumbnail_url)
@@ -498,10 +610,6 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
             } else {
                 art_url
             };
-
-            // Art resolution is only interesting when it actually resolves to
-            // something new, so it's logged with the per-player state below.
-            let _ = &original_art_url;
 
             TrackMetadata { title, artist, art_url, art_bytes, length_us, track_id, track_url }
         } else {
@@ -553,7 +661,7 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
             }
         }
 
-        let next_track = fetch_next_track(&connection, &bus_name, &metadata.track_id).await;
+        let next_track = fetch_next_track(connection, &bus_name, &metadata.track_id).await;
 
         players.push(PlayerInfo {
             bus_name,
@@ -567,13 +675,16 @@ pub async fn get_all_players() -> Vec<PlayerInfo> {
         });
     }
 
+    // Drop cached art belonging to players that have left the bus.
+    art_cache.retain(|bus, _| players.iter().any(|p| p.bus_name == *bus));
+
     players
 }
 
 /// Sends a command to a specific MPRIS media player.
 pub async fn send_command(bus_name: String, command: MprisCommand) {
-    let Ok(connection) = Connection::session().await else { return };
-    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(&connection)
+    let Some(connection) = session_bus().await else { return };
+    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
         .destination(bus_name.as_str())
         .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
         .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"));

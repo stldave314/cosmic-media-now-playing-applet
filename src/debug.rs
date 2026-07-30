@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-only
 
 //! Build-time diagnostic logging.
 //!
@@ -30,8 +30,26 @@ const DEVELOPER_LOGGING: bool = false;
 /// logging left switched on by accident.
 pub const ENABLED: bool = DEVELOPER_LOGGING && !cfg!(feature = "release-build");
 
+/// File name of the log. See [`path`] for where it lands.
+pub const FILE_NAME: &str = "cosmic-media-now-playing.log";
+
 /// Where the log is written. Truncated once per process launch.
-pub const PATH: &str = "/tmp/cosmic-media-now-playing.log";
+///
+/// Preferably `$XDG_RUNTIME_DIR` (per-user, mode 0700), so other local users
+/// can neither read the log — it records listening history — nor pre-create
+/// the path to redirect our writes. Only when that variable is unset (odd for
+/// a desktop session) does it fall back to `/tmp`; the 0600 + `O_NOFOLLOW`
+/// open in [`write`] keeps that fallback safe against symlink planting too.
+pub fn path() -> &'static std::path::Path {
+    use std::sync::OnceLock;
+    static PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        dir.join(FILE_NAME)
+    })
+}
 
 // ── Categories ──────────────────────────────────────────────────────────────
 // Short tags so a run can be filtered with `grep`.
@@ -55,7 +73,15 @@ pub const UPDATE: &str = "update";
 /// entirely when [`ENABLED`] is `false`.
 pub fn write(category: &str, msg: &str) {
     use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::sync::OnceLock;
+
+    // Belt and braces: the macro already skips disabled calls, but gating here
+    // too makes every string in this function (including the log file name)
+    // provably dead code in release builds, so none of it reaches the binary.
+    if !ENABLED {
+        return;
+    }
 
     // First call truncates the file so each launch starts clean, and anchors the
     // elapsed-time clock.
@@ -66,12 +92,18 @@ pub fn write(category: &str, msg: &str) {
         std::time::Instant::now()
     });
 
+    // 0600 — the log records listening history, which is nobody else's
+    // business; O_NOFOLLOW — refuse a symlink planted at the path by another
+    // local user (relevant for the /tmp fallback), rather than following it
+    // and overwriting whatever it points at.
     let mut file = match std::fs::OpenOptions::new()
         .create(true)
         .append(!first)
         .write(true)
         .truncate(first)
-        .open(PATH)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path())
     {
         Ok(f) => f,
         Err(_) => return,

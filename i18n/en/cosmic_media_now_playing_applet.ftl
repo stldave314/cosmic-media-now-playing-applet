@@ -29,3 +29,5 @@ update-error-client = Failed to create HTTP client.
 update-error-connect = Failed to connect to GitHub.
 update-error-parse = Could not parse version information.
 idle-clear = Clear Title When Idle
+idle-clear-minutes = { $minutes } min
+unknown-player = Unknown Player

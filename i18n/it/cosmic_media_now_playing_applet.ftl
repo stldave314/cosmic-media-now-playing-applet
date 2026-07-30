@@ -29,3 +29,5 @@ update-error-client = Impossibile creare il client HTTP.
 update-error-connect = Impossibile connettersi a GitHub.
 update-error-parse = Impossibile interpretare le informazioni sulla versione.
 idle-clear = Nascondi il titolo quando inattivo
+idle-clear-minutes = { $minutes } min
+unknown-player = Lettore sconosciuto

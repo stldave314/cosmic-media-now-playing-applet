@@ -1,10 +1,11 @@
-// SPDX-License-Identifier: GPL-3.0
+// SPDX-License-Identifier: GPL-3.0-only
 
 use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
 use crate::constants::{
-    APPROX_CHAR_WIDTH, CONTROL_BUTTON_WIDTH, MPRIS_POLL_INTERVAL_MS, MUSIC_NOTE_SIZE,
-    PROGRESS_TICK_MS, SCROLL_GAP, SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS,
-    SNAP_ART_PACKAGES, TEXT_OVERDRAW_CHARS, UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
+    APPROX_CHAR_WIDTH, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS, MAX_ART_FILE_BYTES,
+    MAX_ART_HTTP_BYTES, MPRIS_POLL_INTERVAL_MS, MUSIC_NOTE_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
+    SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
+    UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
 use crate::fl;
 use crate::mpris;
@@ -90,17 +91,27 @@ pub struct NowPlaying {
     /// track — i.e. let the current file finish, then stop at the start of the
     /// next one until the user presses play.
     pause_next_track: bool,
-    /// Identity of the track we're waiting to finish while `pause_next_track` is
-    /// armed. When the active track's identity changes away from this, we pause.
-    /// Uses `mpris:trackid` when available, else `xesam:url`, else title+artist —
-    /// browsers (YouTube Music) often omit a stable trackid.
+    /// Identity of the track we're waiting to finish while `pause_next_track`
+    /// is armed (see [`mpris::track_key`]). When that track's identity changes
+    /// away from this, we pause.
     armed_track_key: Option<String>,
+    /// Bus name of the player `pause_next_track` was armed against. Pinned at
+    /// arm time so the pending pause follows that player specifically — if
+    /// auto-switching moves focus to a different player in the meantime, the
+    /// arm must neither fire against nor pause the newly-focused one.
+    armed_player_bus: Option<String>,
     /// The next queued track (title, artist), if the player exposes TrackList.
     next_track: Option<(String, String)>,
-    /// When playback last stopped being `Playing`. Used to blank the panel title
-    /// after `idle_clear_minutes` so a long-paused track stops scrolling.
-    /// `None` while playing; reset when the track changes.
+    /// When playback last stopped being `Playing`. Drives the
+    /// `idle_clear_minutes` timer that stops the applet after a spell of no
+    /// playback. `None` while playing; reset when the track changes.
     not_playing_since: Option<std::time::Instant>,
+    /// Set while the applet is *stopped* — by the panel STOP control or by the
+    /// `idle_clear_minutes` timer. Nothing is drawn on the panel: no title, no
+    /// art, no space taken. Holds the track identity that was showing when it
+    /// stopped, so the state lifts again as soon as the player resumes playing
+    /// or moves to a different track.
+    stopped_at_key: Option<String>,
     /// Status message for the version update check.
     update_status: Option<String>,
 }
@@ -155,18 +166,38 @@ impl Default for NowPlaying {
             can_go_previous: true,
             pause_next_track: false,
             armed_track_key: None,
+            armed_player_bus: None,
             next_track: None,
             not_playing_since: None,
+            stopped_at_key: None,
             update_status: None,
         }
     }
 }
 
-/// A stable-ish identity for a track, used to detect when playback advances to a
-/// different track. Prefers `mpris:trackid`, then `xesam:url`, then title+artist,
-/// since browsers (e.g. YouTube Music) frequently omit a stable trackid.
+/// A stable-ish identity for a track, used to detect when playback advances to
+/// a different track. Combines `mpris:trackid`, `xesam:url`, title and artist —
+/// see [`mpris::track_key`] for why no single field is enough.
 fn track_key_of(track_id: &str, track_url: Option<&str>, title: &str, artist: &str) -> String {
     mpris::track_key(track_id, track_url, title, artist)
+}
+
+/// The lazily-built HTTP client shared by album-art fetches and the update
+/// check. Building a `reqwest::Client` loads the system root-certificate store,
+/// so doing it once matters; the enforced timeout and redirect cap keep a
+/// hostile or wedged server from pinning background tasks open.
+fn http_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .ok()
+        })
+        .as_ref()
 }
 
 /// A settings entry whose label sits tightly above a full-width slider.
@@ -198,6 +229,17 @@ fn labeled_control<'a>(
 }
 
 impl NowPlaying {
+    /// The track URL, but only if it is something we are willing to hand to the
+    /// system URL opener: a well-formed http(s) link. `xesam:url` is untrusted
+    /// metadata that any bus peer can publish, so `file://` paths and custom
+    /// protocol-handler schemes are refused rather than forwarded to whatever
+    /// application happens to be registered for them.
+    fn openable_track_url(&self) -> Option<&str> {
+        let url = self.track_url.as_deref()?;
+        let parsed = reqwest::Url::parse(url).ok()?;
+        matches!(parsed.scheme(), "http" | "https").then_some(url)
+    }
+
     /// The identity key for the currently displayed track.
     fn current_track_key(&self) -> String {
         track_key_of(
@@ -250,10 +292,14 @@ impl NowPlaying {
             && self.panel_hovered
     }
 
+    /// Whether the applet is stopped — see [`NowPlaying::stopped_at_key`].
+    fn is_stopped(&self) -> bool {
+        self.stopped_at_key.is_some()
+    }
+
     /// Returns the visible portion of the display text for the marquee effect.
     fn visible_text(&self) -> String {
-        // Blanked after a long pause — the art stays, the title doesn't.
-        if self.idle_text_cleared() {
+        if self.is_stopped() {
             return String::new();
         }
 
@@ -278,24 +324,10 @@ impl NowPlaying {
             .collect()
     }
 
-    /// Whether the text overflows and needs scrolling.
+    /// Whether the text overflows and needs scrolling. False while stopped, so
+    /// the scroll timer subscription shuts off with nothing to move.
     fn needs_scroll(&self) -> bool {
-        !self.idle_text_cleared() && self.display_text.chars().count() > self.max_visible_chars()
-    }
-
-    /// Whether the panel title should be blanked because playback has been
-    /// stopped longer than `idle_clear_minutes`.
-    ///
-    /// Stops a long-paused track scrolling forever. The album art is left alone,
-    /// so the applet still shows what's loaded; playing again or changing track
-    /// clears the countdown and brings the title back.
-    fn idle_text_cleared(&self) -> bool {
-        let minutes = self.config.idle_clear_minutes;
-        if minutes == 0 {
-            return false;
-        }
-        self.not_playing_since
-            .is_some_and(|since| since.elapsed().as_secs() >= u64::from(minutes) * 60)
+        !self.is_stopped() && self.display_text.chars().count() > self.max_visible_chars()
     }
 
     /// Persist the current config to disk via cosmic-config.
@@ -332,7 +364,7 @@ impl NowPlaying {
         };
 
         // Wrap art in a button when there's a URL to open; plain container otherwise.
-        let art: Element<'_, Message> = if self.track_url.is_some() {
+        let art: Element<'_, Message> = if self.openable_track_url().is_some() {
             widget::button::custom(art_inner)
                 .on_press(Message::OpenTrackUrl)
                 .class(cosmic::theme::Button::Text)
@@ -603,15 +635,15 @@ impl NowPlaying {
                 )
             });
 
-        // How long playback must be stopped before the title is blanked.
+        // How long playback must be idle before the applet stops itself.
         let idle_clear_section = labeled_slider(
             if self.config.idle_clear_minutes == 0 {
                 format!("{}: {}", fl!("idle-clear"), fl!("scroll-off"))
             } else {
                 format!(
-                    "{}: {} min",
+                    "{}: {}",
                     fl!("idle-clear"),
-                    self.config.idle_clear_minutes
+                    fl!("idle-clear-minutes", minutes = self.config.idle_clear_minutes)
                 )
             },
             widget::slider(
@@ -730,12 +762,17 @@ pub enum Message {
     SelectPlayer(String),
     /// Switch between popup views.
     SwitchPopupView(PopupState),
-    /// Fetch album art asynchronously.
-    FetchAlbumArt(String),
+    /// Fetch album art asynchronously: the art URL plus the bus name of the
+    /// player that published it, so `file://` fallback reads stay scoped to
+    /// that player's mount namespace.
+    FetchAlbumArt(String, Option<String>),
     /// Album art fetch completed.
     AlbumArtLoaded(Option<cosmic::iced::widget::image::Handle>),
     /// Send a command to the MPRIS player.
     PlayerCommand(crate::mpris::MprisCommand),
+    /// The panel STOP control: pause the player if it's playing, then clear the
+    /// panel (title and art) until playback resumes or the track changes.
+    StopPlayback,
     /// User toggled "Pause before playing next track".
     TogglePauseNextTrack(bool),
     /// The armed watcher detected the track change and already paused the
@@ -763,7 +800,7 @@ pub enum Message {
     SetPanelArtSize(f32),
     /// User changed the gap between the icon and the title.
     SetIconSpacing(f32),
-    /// User changed how long playback must be stopped before the title blanks.
+    /// User changed how long playback must be idle before the applet stops.
     SetIdleClear(f32),
     /// User toggled whether playback controls appear on panel hover.
     SetHoverControls(bool),
@@ -786,11 +823,13 @@ pub enum Message {
     UpdateCheckComplete(String),
 }
 
-/// Helper: creates the MPRIS poller stream.
+/// Helper: creates the MPRIS poller stream. The art cache lives here, across
+/// polls, so unchanged `file://` album art isn't re-read from disk every second.
 fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = Message> {
     cosmic::iced::stream::channel(4, async |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
+        let mut art_cache = std::collections::HashMap::new();
         loop {
-            let players = mpris::get_all_players().await;
+            let players = mpris::get_all_players(&mut art_cache).await;
             _ = channel.send(Message::MprisUpdate(players)).await;
             tokio::time::sleep(std::time::Duration::from_millis(MPRIS_POLL_INTERVAL_MS)).await;
         }
@@ -863,7 +902,8 @@ impl cosmic::Application for NowPlaying {
                 Ok(config) => config,
                 Err((_errors, config)) => config,
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .clamped();
 
         let mut app = NowPlaying {
             core,
@@ -889,11 +929,41 @@ impl cosmic::Application for NowPlaying {
         let panel_height = self.core.applet.suggested_size(true).1
             + 2 * self.core.applet.suggested_padding(true).1;
 
-        if !self.has_player || self.track_title.is_empty() {
+        // Nothing to show: no player, no title, or explicitly stopped — in
+        // which case the applet gives its panel space back entirely.
+        if !self.has_player || self.track_title.is_empty() || self.is_stopped() {
             return widget::autosize::autosize(
                 widget::Space::new().width(Length::Fixed(0.0)).height(Length::Fixed(0.0)),
                 AUTOSIZE_MAIN_ID.clone(),
             ).into();
+        }
+
+        // A vertical panel has no room for a fixed-width marquee strip, so the
+        // applet collapses to a standard square applet button — album art when
+        // available, otherwise the music-note icon — that opens the popup.
+        if !self.core.applet.is_horizontal() {
+            let button = if let Some(handle) = &self.art_image {
+                let (art_w, art_h) = self.core.applet.suggested_size(false);
+                self.core
+                    .applet
+                    .button_from_element(
+                        Element::from(
+                            widget::Image::new(handle.clone())
+                                .border_radius([3.0; 4])
+                                .content_fit(cosmic::iced::ContentFit::Cover)
+                                .width(Length::Fixed(f32::from(art_w)))
+                                .height(Length::Fixed(f32::from(art_h))),
+                        ),
+                        false,
+                    )
+                    .on_press(Message::TogglePopup)
+            } else {
+                self.core
+                    .applet
+                    .icon_button("audio-x-generic-symbolic")
+                    .on_press(Message::TogglePopup)
+            };
+            return widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into();
         }
 
         // The leading element beside the panel text depends on the user setting:
@@ -935,15 +1005,23 @@ impl cosmic::Application for NowPlaying {
             let leading_icon = leading.expect("controls require a panel icon");
             let want_prev = self.can_go_previous;
             let want_next = self.can_go_next;
-            let desired = 1 + want_prev as usize + want_next as usize;
-            let show_skips =
-                self.available_panel_width() >= desired as f32 * CONTROL_BUTTON_WIDTH;
+            let available = self.available_panel_width();
+
+            // Controls are added by priority as room allows, so a narrow widget
+            // degrades predictably instead of overflowing: play/pause always,
+            // then the skip pair (unchanged from before STOP existed, so no
+            // layout regresses), then STOP with whatever room is left.
+            let skips = usize::from(want_prev) + usize::from(want_next);
+            let show_skips = available >= (1 + skips) as f32 * CONTROL_BUTTON_WIDTH;
+            let shown = 1 + if show_skips { skips } else { 0 };
+            let show_stop = available >= (shown + 1) as f32 * CONTROL_BUTTON_WIDTH;
+
             let play_pause_icon = if self.playback_status == "Playing" {
                 "media-playback-pause-symbolic"
             } else {
                 "media-playback-start-symbolic"
             };
-            let mut controls = widget::row::with_capacity(desired)
+            let mut controls = widget::row::with_capacity(shown + usize::from(show_stop))
                 .spacing(4)
                 .align_y(Vertical::Center);
             if show_skips && want_prev {
@@ -964,6 +1042,16 @@ impl cosmic::Application for NowPlaying {
                         widget::icon::from_name("media-skip-forward-symbolic").size(16),
                     )
                     .on_press(Message::PlayerCommand(mpris::MprisCommand::Next)),
+                );
+            }
+            // STOP (solid square): pause and hand the panel space back until
+            // there's something new to show.
+            if show_stop {
+                controls = controls.push(
+                    widget::button::icon(
+                        widget::icon::from_name("media-playback-stop-symbolic").size(16),
+                    )
+                    .on_press(Message::StopPlayback),
                 );
             }
 
@@ -1043,12 +1131,13 @@ impl cosmic::Application for NowPlaying {
             subs.push(Subscription::run_with(self.config.scroll_speed, scroll_timer_stream));
         }
 
-        // 3a. Armed watcher — polls just the active player's metadata rapidly so
+        // 3a. Armed watcher — polls just the armed player's metadata rapidly so
         // the pause lands before the next track is audible. Only runs while
-        // armed, and stops as soon as it fires.
+        // armed, stops as soon as it fires, and stays pinned to the player it
+        // was armed on even if auto-switching changes the active player.
         if self.pause_next_track {
             if let (Some(bus), Some(armed)) =
-                (self.active_player_bus.clone(), self.armed_track_key.clone())
+                (self.armed_player_bus.clone(), self.armed_track_key.clone())
             {
                 subs.push(Subscription::run_with((bus, armed), armed_watch_stream));
             }
@@ -1109,19 +1198,23 @@ impl cosmic::Application for NowPlaying {
                     None,
                 );
                 // The helper derives its anchor rect from `suggested_size()` —
-                // the default applet footprint (roughly one icon). This applet is
-                // autosized to `widget_width` instead, so without correcting the
-                // rect the popup anchors to a sliver at the widget's leading edge
-                // and appears offset. Match the rect to the real surface so the
-                // popup lines up with the applet.
-                let panel_height = self.core.applet.suggested_size(true).1
-                    + 2 * self.core.applet.suggested_padding(true).1;
-                popup_settings.positioner.anchor_rect = cosmic::iced::Rectangle {
-                    x: 0,
-                    y: 0,
-                    width: self.config.widget_width as i32,
-                    height: panel_height as i32,
-                };
+                // the default applet footprint (roughly one icon). On a
+                // horizontal panel this applet is autosized to `widget_width`
+                // instead, so without correcting the rect the popup anchors to
+                // a sliver at the widget's leading edge and appears offset.
+                // Match the rect to the real surface so the popup lines up
+                // with the applet. (Vertical panels use the standard square
+                // button, where the helper's default rect is already right.)
+                if self.core.applet.is_horizontal() {
+                    let panel_height = self.core.applet.suggested_size(true).1
+                        + 2 * self.core.applet.suggested_padding(true).1;
+                    popup_settings.positioner.anchor_rect = cosmic::iced::Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: self.config.widget_width as i32,
+                        height: panel_height as i32,
+                    };
+                }
                 popup_settings.positioner.size_limits = Limits::NONE
                     .min_height(100.0)
                     .max_height(600.0);
@@ -1193,15 +1286,6 @@ impl cosmic::Application for NowPlaying {
 
                 self.next_track = new_next_track;
 
-                // A robust identity for the newly-reported track (trackid → url →
-                // title+artist), used to detect real track transitions.
-                let new_key = track_key_of(
-                    &new_track_id,
-                    new_track_url.as_deref(),
-                    &title,
-                    &artist,
-                );
-
                 let changed = self.track_title != title
                     || self.track_artist != artist
                     || self.has_player != has_player;
@@ -1222,6 +1306,46 @@ impl cosmic::Application for NowPlaying {
                     self.not_playing_since = Some(std::time::Instant::now());
                 }
 
+                // Identity of what the active player is reporting right now.
+                // The stop state is judged against it: `self.track_*` still
+                // holds the previous poll's values at this point.
+                let new_key =
+                    track_key_of(&new_track_id, new_track_url.as_deref(), &title, &artist);
+
+                // Lift a stop as soon as there's something new to show —
+                // playback resumed, or the player moved to a different track.
+                if self
+                    .stopped_at_key
+                    .as_deref()
+                    .is_some_and(|stopped| self.playback_status == "Playing" || stopped != new_key)
+                {
+                    crate::debug_log!(crate::debug::UI, "stop lifted → panel restored");
+                    self.stopped_at_key = None;
+                }
+
+                // Idle long enough that showing a stale track is just noise, so
+                // stop the applet exactly as the STOP control does. No Pause is
+                // sent — `not_playing_since` is only set while the player isn't
+                // playing. Held off while the popup is open rather than pulling
+                // the surface out from under it.
+                let idle_minutes = self.config.idle_clear_minutes;
+                if idle_minutes > 0
+                    && has_player
+                    && !self.is_stopped()
+                    && self.popup.is_none()
+                    && self.not_playing_since.is_some_and(|since| {
+                        since.elapsed().as_secs() >= u64::from(idle_minutes) * 60
+                    })
+                {
+                    crate::debug_log!(
+                        crate::debug::UI,
+                        "idle {idle_minutes} min → stopping, panel cleared"
+                    );
+                    self.stopped_at_key = Some(new_key);
+                    // No CursorLeft arrives once the surface is gone.
+                    self.panel_hovered = false;
+                }
+
                 self.track_url = new_track_url;
 
                 // Update position/duration. When the track changes, reset seek state.
@@ -1231,14 +1355,41 @@ impl cosmic::Application for NowPlaying {
                 }
                 self.length_us = new_length_us;
 
-                // "Pause before playing next track": the armed track is no longer
-                // the current one (the file finished and the player advanced) and
-                // we're now playing — so the next file has just started.
-                let armed_fired = self.pause_next_track
-                    && has_player
-                    && self.playback_status == "Playing"
-                    && self.armed_track_key.as_deref()
-                        .is_some_and(|armed| armed != new_key.as_str());
+                // "Pause before playing next track": judged against the *armed*
+                // player's own state — auto-switching may have moved focus to a
+                // different player, and the pending stop belongs to the one it
+                // was armed on. It fires when that player is Playing a track
+                // whose identity differs from the armed one (the file finished
+                // and the player advanced past it). If the armed player has
+                // left the bus entirely, disarm — otherwise the fast watcher
+                // would keep polling a dead bus name until manually disarmed.
+                let mut armed_fired: Option<(String, String)> = None;
+                if self.pause_next_track {
+                    let armed_player = self.armed_player_bus.as_ref()
+                        .and_then(|bus| self.players.iter().find(|p| &p.bus_name == bus));
+                    match armed_player {
+                        Some(p) => {
+                            let key = track_key_of(
+                                &p.metadata.track_id,
+                                p.metadata.track_url.as_deref(),
+                                &p.metadata.title,
+                                &p.metadata.artist,
+                            );
+                            if p.playback_status == "Playing"
+                                && self.armed_track_key.as_deref()
+                                    .is_some_and(|armed| armed != key)
+                            {
+                                armed_fired =
+                                    Some((p.bus_name.clone(), p.metadata.track_id.clone()));
+                            }
+                        }
+                        None => {
+                            self.pause_next_track = false;
+                            self.armed_track_key = None;
+                            self.armed_player_bus = None;
+                        }
+                    }
+                }
 
                 self.track_id = new_track_id;
                 // Don't clobber the slider while the user is dragging.
@@ -1256,29 +1407,28 @@ impl cosmic::Application for NowPlaying {
 
                 let mut tasks: Vec<Task<cosmic::Action<Self::Message>>> = Vec::new();
 
-                if armed_fired {
+                if let Some((armed_bus, new_track_id)) = armed_fired {
                     // Consume the one-shot arm and stop at the new track's start.
                     self.pause_next_track = false;
                     self.armed_track_key = None;
-                    if let Some(bus) = self.active_player_bus.clone()
-                        .or_else(|| self.players.first().map(|p| p.bus_name.clone()))
-                    {
-                        let track_id = self.track_id.clone();
+                    self.armed_player_bus = None;
+                    tasks.push(Task::perform(
+                        mpris::send_command(armed_bus.clone(), mpris::MprisCommand::Pause),
+                        |_| cosmic::Action::App(Message::Ignore),
+                    ));
+                    // Rewind the just-started next track to 0 so pressing play
+                    // resumes from its beginning rather than ~1s in.
+                    if !new_track_id.is_empty() {
                         tasks.push(Task::perform(
-                            mpris::send_command(bus.clone(), mpris::MprisCommand::Pause),
+                            mpris::send_command(
+                                armed_bus,
+                                mpris::MprisCommand::SetPosition {
+                                    track_id: new_track_id,
+                                    position_us: 0,
+                                },
+                            ),
                             |_| cosmic::Action::App(Message::Ignore),
                         ));
-                        // Rewind the just-started next track to 0 so pressing play
-                        // resumes from its beginning rather than ~1s in.
-                        if !track_id.is_empty() {
-                            tasks.push(Task::perform(
-                                mpris::send_command(
-                                    bus,
-                                    mpris::MprisCommand::SetPosition { track_id, position_us: 0 },
-                                ),
-                                |_| cosmic::Action::App(Message::Ignore),
-                            ));
-                        }
                     }
                 }
 
@@ -1290,7 +1440,10 @@ impl cosmic::Application for NowPlaying {
                         self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
                     } else if let Some(url) = art_url {
                         // For http:// and data: URLs, fetch asynchronously.
-                        tasks.push(Task::done(cosmic::Action::App(Message::FetchAlbumArt(url))));
+                        tasks.push(Task::done(cosmic::Action::App(Message::FetchAlbumArt(
+                            url,
+                            self.active_player_bus.clone(),
+                        ))));
                     }
                 }
 
@@ -1300,11 +1453,10 @@ impl cosmic::Application for NowPlaying {
             }
             Message::SelectPlayer(bus_name) => {
                 self.config.selected_player = Some(bus_name.clone());
-                self.active_player_bus = Some(bus_name);
+                self.active_player_bus = Some(bus_name.clone());
                 self.save_config();
-                
-                let selected_bus = self.config.selected_player.as_ref().unwrap().clone();
-                if let Some(p) = self.players.iter().find(|p| p.bus_name == selected_bus).cloned() {
+
+                if let Some(p) = self.players.iter().find(|p| p.bus_name == bus_name).cloned() {
                     let changed = self.track_title != p.metadata.title || self.track_artist != p.metadata.artist;
                     let art_changed = self.art_url != p.metadata.art_url;
 
@@ -1324,7 +1476,10 @@ impl cosmic::Application for NowPlaying {
                         if let Some(bytes) = p.metadata.art_bytes {
                             self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
                         } else if let Some(url) = self.art_url.clone() {
-                            return Task::done(cosmic::Action::App(Message::FetchAlbumArt(url)));
+                            return Task::done(cosmic::Action::App(Message::FetchAlbumArt(
+                                url,
+                                Some(bus_name),
+                            )));
                         }
                     }
                 }
@@ -1429,8 +1584,8 @@ impl cosmic::Application for NowPlaying {
             Message::SwitchPopupView(state) => {
                 self.popup_state = state;
             }
-            Message::FetchAlbumArt(url) => {
-                return Task::perform(fetch_album_art(url), cosmic::Action::App);
+            Message::FetchAlbumArt(url, bus_name) => {
+                return Task::perform(fetch_album_art(url, bus_name), cosmic::Action::App);
             }
             Message::AlbumArtLoaded(handle) => {
                 self.art_image = handle;
@@ -1441,6 +1596,7 @@ impl cosmic::Application for NowPlaying {
                 if matches!(cmd, mpris::MprisCommand::PlayPause) {
                     self.pause_next_track = false;
                     self.armed_track_key = None;
+                    self.armed_player_bus = None;
                 }
                 // Bring a blanked title straight back rather than waiting for
                 // the next poll to notice playback resumed.
@@ -1459,19 +1615,48 @@ impl cosmic::Application for NowPlaying {
                     return Task::perform(crate::mpris::send_command(bus, cmd), |_| cosmic::Action::App(Message::Ignore));
                 }
             }
+            Message::StopPlayback => {
+                // Blank the panel until there's something new to show. The key
+                // pins what was showing, so resuming or changing track lifts it.
+                self.stopped_at_key = Some(self.current_track_key());
+                // An explicit user action, like play/pause: cancel any pending
+                // "pause before next track" arm.
+                self.pause_next_track = false;
+                self.armed_track_key = None;
+                self.armed_player_bus = None;
+                // The surface is about to disappear, so no CursorLeft will
+                // arrive to clear this — without it the applet would come back
+                // already showing its hover controls.
+                self.panel_hovered = false;
+                crate::debug_log!(crate::debug::UI, "stop pressed → panel cleared");
+
+                if self.playback_status == "Playing" {
+                    if let Some(bus) = self.active_player_bus.clone()
+                        .or_else(|| self.players.first().map(|p| p.bus_name.clone()))
+                    {
+                        return Task::perform(
+                            mpris::send_command(bus, mpris::MprisCommand::Pause),
+                            |_| cosmic::Action::App(Message::Ignore),
+                        );
+                    }
+                }
+            }
             Message::TogglePauseNextTrack(checked) => {
                 self.pause_next_track = checked;
-                // Arm against the current track's identity so we fire when it
-                // changes — works even when the player omits a stable trackid.
-                self.armed_track_key = if checked && self.has_player {
-                    Some(self.current_track_key())
+                // Arm against the current track's identity — and pin the player
+                // it belongs to — so we fire when that player moves off this
+                // track, even when it omits a stable trackid.
+                let armed = checked && self.has_player;
+                self.armed_track_key = armed.then(|| self.current_track_key());
+                self.armed_player_bus = if armed {
+                    self.active_player_bus.clone()
                 } else {
                     None
                 };
                 crate::debug_log!(
                     crate::debug::WATCH,
                     "toggled={checked} has_player={} bus={:?} armed={:?}",
-                    self.has_player, self.active_player_bus, self.armed_track_key,
+                    self.has_player, self.armed_player_bus, self.armed_track_key,
                 );
             }
             Message::ArmedPauseFired => {
@@ -1479,8 +1664,12 @@ impl cosmic::Application for NowPlaying {
                 crate::debug_log!(crate::debug::WATCH, "watcher reported fired → disarming");
                 self.pause_next_track = false;
                 self.armed_track_key = None;
+                self.armed_player_bus = None;
             }
             Message::ConfigChanged(config) => {
+                // Externally-edited files can hold out-of-range values; clamp
+                // at the boundary like init() does.
+                let config = config.clamped();
                 if self.config != config {
                     self.config = config;
                     self.slider_width = self.config.widget_width;
@@ -1488,8 +1677,19 @@ impl cosmic::Application for NowPlaying {
                 }
             }
             Message::OpenTrackUrl => {
-                if let Some(url) = &self.track_url {
-                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                // Scheme-checked (http/https only) and passed as a single exec
+                // argument — never through a shell. The child is awaited on the
+                // executor so it gets reaped instead of lingering as a zombie.
+                if let Some(url) = self.openable_track_url().map(str::to_owned) {
+                    return Task::future(async move {
+                        match tokio::process::Command::new("xdg-open").arg(&url).spawn() {
+                            Ok(mut child) => {
+                                let _ = child.wait().await;
+                            }
+                            Err(why) => eprintln!("error opening {url}: {why}"),
+                        }
+                        cosmic::Action::App(Message::Ignore)
+                    });
                 }
             }
             Message::SeekSliderChanged(value) => {
@@ -1537,70 +1737,77 @@ impl cosmic::Application for NowPlaying {
 ///
 /// Firefox (and Chromium) expose MPRIS artwork as data: URIs with base64-encoded image
 /// data rather than file:// or https:// URLs, so all three schemes must be handled.
-async fn fetch_album_art(url: String) -> Message {
-    Message::AlbumArtLoaded(fetch_art_bytes(&url).await.map(cosmic::iced::widget::image::Handle::from_bytes))
+/// Every scheme is untrusted input from the session bus, so each is bounded: file
+/// reads are scoped to the publishing player and size-capped (see `mpris`), inline
+/// data is length-checked before decoding, and HTTP bodies are streamed against a
+/// byte cap under the shared client's timeout.
+async fn fetch_album_art(url: String, bus_name: Option<String>) -> Message {
+    Message::AlbumArtLoaded(
+        fetch_art_bytes(&url, bus_name.as_deref())
+            .await
+            .map(cosmic::iced::widget::image::Handle::from_bytes),
+    )
 }
 
-async fn fetch_art_bytes(url: &str) -> Option<Vec<u8>> {
-    if url.starts_with("file://") {
-        let path = url.strip_prefix("file://")?;
-        if let Ok(bytes) = tokio::fs::read(path).await {
-            return Some(bytes);
-        }
-        // Scan every /proc/<pid>/root/<path> to find the file inside any sandbox.
-        // This is a last-resort for when the inline read in get_all_players() missed it.
-        if let Ok(mut proc_entries) = tokio::fs::read_dir("/proc").await {
-            while let Ok(Some(entry)) = proc_entries.next_entry().await {
-                let pid_str = entry.file_name();
-                let pid_str = pid_str.to_string_lossy();
-                if !pid_str.chars().all(|c| c.is_ascii_digit()) {
-                    continue;
-                }
-                let proc_path = format!("/proc/{pid_str}/root{path}");
-                if let Ok(bytes) = tokio::fs::read(&proc_path).await {
-                    return Some(bytes);
-                }
-            }
-        }
-        let filename = std::path::Path::new(path).file_name()?.to_str()?;
-        for snap_name in SNAP_ART_PACKAGES {
-            let snap_path = format!("/tmp/snap-private-tmp/snap.{snap_name}/tmp/{filename}");
-            if let Ok(bytes) = tokio::fs::read(&snap_path).await {
-                return Some(bytes);
-            }
-        }
-        None
-    } else if url.starts_with("data:") {
+async fn fetch_art_bytes(url: &str, bus_name: Option<&str>) -> Option<Vec<u8>> {
+    if url.starts_with("file:") {
+        // Fallback for when the poll-time read missed (player switch after
+        // startup, browser writing the file late). Same scoped, capped lookup
+        // as the poller: literal path, the owning player's mount namespace,
+        // then the snap-private-tmp fallback — never a scan of every process.
+        mpris::read_art_url_for_player(bus_name, url).await
+    } else if let Some(rest) = url.strip_prefix("data:") {
         // Format: data:[<mediatype>][;base64],<data>
-        let comma = url.find(',')?;
-        let header = &url["data:".len()..comma];
-        let data = &url[comma + 1..];
-        if header.ends_with(";base64") {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()
-        } else {
-            None
+        let comma = rest.find(',')?;
+        let (header, data) = (&rest[..comma], &rest[comma + 1..]);
+        if !header.ends_with(";base64") {
+            return None;
         }
-    } else if url.starts_with("http") {
+        // Cap the decoded size like every other art source (base64 is 4/3
+        // overhead, so cap the encoded text at 4/3 of the byte limit).
+        if data.len() as u64 > MAX_ART_FILE_BYTES / 3 * 4 {
+            crate::debug_log!(crate::debug::ART, "data: URI over size cap ({} chars)", data.len());
+            return None;
+        }
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()
+    } else if url.starts_with("http://") || url.starts_with("https://") {
         crate::debug_log!(crate::debug::ART, "http fetch: {url}");
-        let client = match reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-        {
-            Ok(c) => c,
-            Err(e) => { crate::debug_log!(crate::debug::ART, "client build error: {e}"); return None; }
-        };
-        let resp = match client.get(url).send().await {
+        let client = http_client()?;
+        let mut resp = match client.get(url).send().await {
             Ok(r) => r,
             Err(e) => { crate::debug_log!(crate::debug::ART, "http send error: {e}"); return None; }
         };
         let status = resp.status();
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
-            Err(e) => { crate::debug_log!(crate::debug::ART, "http body error: {e}"); return None; }
-        };
+        if !status.is_success() {
+            crate::debug_log!(crate::debug::ART, "http {status} → skipped");
+            return None;
+        }
+        if resp.content_length().is_some_and(|len| len > MAX_ART_HTTP_BYTES) {
+            crate::debug_log!(crate::debug::ART, "http response over size cap → skipped");
+            return None;
+        }
+        // Stream with a running cap rather than buffering blindly, so a body
+        // that ignores (or lies about) Content-Length can't balloon memory.
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    if bytes.len() as u64 + chunk.len() as u64 > MAX_ART_HTTP_BYTES {
+                        crate::debug_log!(crate::debug::ART, "http body over size cap → aborted");
+                        return None;
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    crate::debug_log!(crate::debug::ART, "http body error: {e}");
+                    return None;
+                }
+            }
+        }
         crate::debug_log!(crate::debug::ART, "http {status} → {} bytes", bytes.len());
-        Some(bytes.to_vec())
+        Some(bytes)
     } else {
         crate::debug_log!(crate::debug::ART, "unsupported url scheme: {url}");
         None
@@ -1608,12 +1815,8 @@ async fn fetch_art_bytes(url: &str) -> Option<Vec<u8>> {
 }
 
 async fn check_for_updates() -> String {
-    let client = match reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return fl!("update-error-client"),
+    let Some(client) = http_client() else {
+        return fl!("update-error-client");
     };
 
     let resp = match client.get(UPDATE_LATEST_RELEASE_URL).send().await {

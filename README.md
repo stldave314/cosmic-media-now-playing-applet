@@ -76,12 +76,14 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 |---------|-------------|
 | 🎵 **Inline panel display** | Album art (or music-note icon) plus the track name, right on the panel bar |
 | 🖼️ **Panel album art** | The panel icon can be the live album-art thumbnail, a music note, or nothing |
-| 🎚️ **Hover controls** | Hover the panel for inline previous / play-pause / next; the icon/art still opens the popup |
+| 🎚️ **Hover controls** | Hover the panel for inline previous / play-pause / next / stop; the icon/art still opens the popup |
+| ⏹️ **Stop button** | Pauses and clears the applet — title *and* art — so a finished session stops occupying the panel. Returns on its own when you play again or change track |
+| ⏲️ **Optional idle timer** | Can do the same thing automatically after playback has been paused for a configurable number of minutes (off by default) |
 | 🧭 **Capability-aware buttons** | Previous/next are hidden automatically when the player doesn't support them (MPRIS `CanGoNext`/`CanGoPrevious`) |
 | ⏩ **Seekable progress bar** | Scrub the track with a draggable slider and elapsed / total time — updated smoothly, not once a second |
 | ⏸️ **Pause before next track** | Arm a one-shot stop: the current track finishes, then playback halts before the next one starts. Ideal for ending a session on the track you're on |
 | ⏭️ **Next-track preview** | Shows the upcoming queued track for players that expose the MPRIS `TrackList` interface |
-| 🔗 **Click art to open source** | Clicking the popup album art opens the track's URL (e.g. the YouTube tab) in your browser |
+| 🔗 **Click art to open source** | Clicking the popup album art opens the track's URL (e.g. the YouTube tab) in your browser — `http(s)` links only |
 | 🎛️ **Player selector** | Choose which player to control when several are active |
 | 🔄 **Auto-switching** | Automatically follows whichever player starts playing |
 | 📜 **Marquee scrolling** | Long titles scroll with adjustable speed — or set it to **Off** for a static title |
@@ -89,6 +91,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | 🎨 **Display formats** | Title Only, Artist — Title, or Title — Artist |
 | 🖱️ **Click anywhere** | The whole widget is clickable (with a pointer cursor) to open the popup |
 | 👻 **Invisible when idle** | Takes up zero panel space when nothing is playing |
+| 📐 **Vertical panels** | On a left/right panel the applet collapses to a square art/icon button that opens the popup |
 | 📦 **Sandbox-aware art** | Works across Flatpak, Snap, and native packages |
 | 🦀 **Pure Rust + i18n** | `zbus` for native D-Bus; Fluent-based localization |
 
@@ -104,6 +107,15 @@ The applet loads art from whatever the player exposes:
 - **`data:` URIs** — base64-encoded inline images (used by Firefox)
 - **`https://` URLs** — fetched over HTTP (Spotify, etc.)
 - **YouTube thumbnails** — derived from the track URL when a browser plays a YouTube video and the art file is otherwise inaccessible
+
+### Security & Privacy
+
+MPRIS metadata is treated as **untrusted input** — any process on the session bus can publish it — so every path it can influence is bounded:
+
+- **Art file reads** accept only regular files up to a size cap, opened non-blocking (a device node, FIFO, or huge file is refused, not read). Sandbox lookups go through the mount namespace of the *player that published the URL*, never a scan of other processes.
+- **Art downloads** are size-capped while streaming, time-limited, and use certificate-validated TLS (rustls with the system trust store) for `https://`.
+- **Clicking album art** forwards only well-formed `http(s)` URLs to the browser — never `file://` paths or custom protocol schemes.
+- **Nothing is written to disk** except your settings (via `cosmic-config`); nothing leaves the machine except the art fetches above and the explicit, user-initiated update check against GitHub.
 
 ---
 
@@ -221,6 +233,17 @@ When media is playing you'll see the album art/icon and the (scrolling) title on
 
 Click the applet to open the **media popup** (player selector, album art, title/artist, seek bar, and playback controls), then click the gear icon (⚙) for **settings**. All settings apply immediately and save automatically.
 
+### Stopping
+
+A stale track that scrolls on the panel forever after you've finished listening is just noise, so the applet can clear itself — manually or on a timer. Both do exactly the same thing:
+
+- **The STOP button** (solid square) in the hover controls pauses playback if it's playing, then clears the applet completely — title and album art — so it takes up no panel space.
+- **Clear Title When Idle** does it automatically once playback has been paused (or nothing new has played) for the configured number of minutes. It's **Off by default**; it sends no commands to the player (by definition it only triggers when the player already isn't playing) and it holds off while the popup is open rather than closing it under you.
+
+Either way, the applet comes back by itself as soon as the player **starts playing again or moves to a different track** — nothing needs to be re-enabled.
+
+Because a stopped applet is invisible, the settings popup isn't reachable while it's stopped. Press play in your media player (or skip to another track) and the applet — and its settings — reappear.
+
 ### Pause Before Playing Next Track
 
 Below the playback controls is a switch that arms a **one-shot stop**: the current track plays to the end, then playback halts before the next one starts, and stays paused until you press play. It's for stepping away without cutting off what's playing.
@@ -244,7 +267,7 @@ Below the playback controls is a switch that arms a **one-shot stop**: the curre
 | **Album Art Size** | 12 – 48 px | 16 px | Size of the panel thumbnail (and music-note fallback) |
 | **Icon Spacing** | 0 – 40 px | 6 px | Gap between icon/art and title; hidden when Panel Icon is "No Icon" |
 | **Show Controls on Hover** | On / Off | On | Requires a Panel Icon other than "No Icon"; prev/next appear only when supported and there's room |
-| **Clear Title When Idle** | Off, 1 – 60 min | 5 min | Blanks the panel title once playback has been stopped this long, so a long-paused track stops scrolling. Album art stays; playing again or changing track brings it back |
+| **Clear Title When Idle** | Off, 1 – 60 min | **Off** | Stops the applet once playback has been idle this long — same result as pressing STOP: title and art clear, and the panel space is given back. Playing again or changing track brings it back |
 
 ### Config File Location
 
@@ -273,7 +296,7 @@ Stored via `cosmic-config` at:
 ┌─────────────────────────────────────────────────────┐
 │                    COSMIC Panel                      │
 │   ┌──────────────────────────────────────────────┐  │
-│   │  🖼  Artist — Track Title  ←←← scrolling     │  │  ← hover: [⏮][⏯][⏭]
+│   │  🖼  Artist — Track Title  ←←← scrolling     │  │  ← hover: [⏮][⏯][⏭][⏹]
 │   └──────────────┬───────────────────────────────┘  │
 │                  │ click anywhere                    │
 │   ┌──────────────▼───────────────────────────────┐  │
@@ -321,6 +344,8 @@ Stored via `cosmic-config` at:
 - **Pure-Rust D-Bus** — [zbus](https://crates.io/crates/zbus) (async, pure Rust) instead of wrapping C libraries, eliminating all C D-Bus dependencies.
 - **Sandbox-aware art loading** — MPRIS `file://` art paths often point inside a sandboxed process's private filesystem. The applet resolves the player's PID over D-Bus and reads through `/proc/<pid>/root/<path>`, which works uniformly for Flatpak, Snap, and other sandboxes. YouTube thumbnails serve as a fallback for browsers when the file is unreachable.
 - **Capability-aware controls** — previous/next follow the player's MPRIS `CanGoNext` / `CanGoPrevious`, so they disappear for sources that can't skip (single streams, the last item in a queue, …).
+- **Space-aware hover controls** — the panel strip is a fixed width, so controls are added by priority as room allows: play/pause always, then the previous/next pair, then STOP. A narrow widget degrades predictably instead of overflowing.
+- **Stopping is applet state, not a player command** — STOP pauses (only if playing) and then suppresses the applet's own display, keying on the track identity that was showing. Nothing is discarded, so resuming or changing track restores the title and art instantly with no re-fetch. The idle timer routes through that same state rather than duplicating it, so manual and automatic stops can't drift apart. MPRIS `Stop` is deliberately *not* used: it resets position and several players handle it poorly or drop off the bus entirely.
 - **Seeking** — the progress bar reads `Position` / `mpris:length` and commits scrubs via MPRIS `SetPosition`, shown only when the player reports a duration. Between the 1 s polls the position is interpolated from elapsed wall-clock time and redrawn at ~10 fps, so the bar glides instead of stepping once a second; each poll re-syncs it, so drift can't accumulate.
 - **Pausing before the next track** — MPRIS has no "stop after current track", so this is built on top of it. Reacting to the track *change* is a race that can't be won: by the time any client observes the new track, the player is already producing audio. So the watcher is **predictive** — it tracks position against duration and pauses 300 ms before the end, meaning the player never advances at all. It sleeps exactly as long as it needs to reach that point (capped at 500 ms), costing only a handful of D-Bus calls per track. Detecting the track change remains a fallback for cases prediction can't cover — unknown duration (live streams), gapless/crossfaded transitions, or a manual skip — where it pauses and rewinds the new track to 0:00.
 - **Track identity** — "has the track changed?" is keyed on a composite of `mpris:trackid` + `xesam:url` + title + artist, because some players (notably browsers) reuse a single track id for a whole session. MPRIS delivers Metadata as one dict, so these fields change together and can't disagree mid-update.
@@ -339,7 +364,9 @@ Stored via `cosmic-config` at:
 
 **Album art not showing.** Local players usually embed art (works automatically); browsers on YouTube use the thumbnail; Spotify fetches over HTTPS. If art still doesn't appear, confirm network access and that the player exposes `mpris:artUrl`.
 
-**Hover controls don't appear.** They require **Show Controls on Hover** enabled (default) **and** a **Panel Icon** other than "No Icon" (the icon/art anchors the popup click). Previous/next also need player support and enough widget width; otherwise you'll see just play/pause.
+**Hover controls don't appear.** They require **Show Controls on Hover** enabled (default) **and** a **Panel Icon** other than "No Icon" (the icon/art anchors the popup click). The rest appear as room allows: play/pause always, then previous/next (if the player supports them), then STOP. Widen the widget if you're missing one.
+
+**The applet vanished while music was paused.** Either the STOP button was pressed, or **Clear Title When Idle** is enabled and its timer elapsed (it's Off unless you turned it on). Press play in your player, or change track, and it returns. To change the timing, bring the applet back first, then open settings; the value also lives at `~/.config/cosmic/com.github.cosmic_media_now_playing_applet/v1/idle_clear_minutes`.
 
 **"Pause before playing next track" is greyed out.** The player is reporting no next track (`CanGoNext = false`) — common for a single stream or the last item in a queue.
 
@@ -359,7 +386,7 @@ Stored via `cosmic-config` at:
 
 Contributions are welcome — report bugs, suggest features, or open PRs (fork, branch, code, PR).
 
-**Add a translation:** copy `i18n/en/cosmic_media_now_playing_applet.ftl` to `i18n/<lang_code>/`, translate the values (leave the keys alone), and submit a PR. Every user-facing string goes through Fluent, so that one file covers the whole UI. Keys taking arguments — `version-label`, `update-uptodate`, `update-available` — must keep their `{ $placeholders }`.
+**Add a translation:** copy `i18n/en/cosmic_media_now_playing_applet.ftl` to `i18n/<lang_code>/`, translate the values (leave the keys alone), and submit a PR. Every user-facing string goes through Fluent, so that one file covers the whole UI. Keys taking arguments — `version-label`, `update-uptodate`, `update-available`, `idle-clear-minutes` — must keep their `{ $placeholders }`.
 
 Example (`i18n/es/…ftl`):
 
@@ -394,6 +421,9 @@ update-available = Actualización disponible: v{ $remote } (actual: v{ $local })
 update-error-client = No se pudo crear el cliente HTTP.
 update-error-connect = No se pudo conectar con GitHub.
 update-error-parse = No se pudo interpretar la versión.
+idle-clear = Borrar título cuando esté inactivo
+idle-clear-minutes = { $minutes } min
+unknown-player = Reproductor desconocido
 ```
 
 ---
