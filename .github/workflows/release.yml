@@ -84,6 +84,10 @@ jobs:
   # is created in a single place with the full set of artifacts attached.
   publish:
     needs: build
+    # Only a version tag produces a release. workflow_dispatch still runs the
+    # build jobs — useful as a smoke test — but must not publish, or it would
+    # create a release named after whatever branch it was dispatched from.
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     runs-on: ubuntu-latest
