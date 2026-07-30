@@ -7,7 +7,7 @@ prefix := '/usr'
 # Installation paths
 base-dir := absolute_path(clean(rootdir / prefix))
 cargo-target-dir := env('CARGO_TARGET_DIR', 'target')
-appdata-dst := base-dir / 'share' / 'appdata' / appid + '.metainfo.xml'
+appdata-dst := base-dir / 'share' / 'metainfo' / appid + '.metainfo.xml'
 bin-dst := base-dir / 'bin' / name
 desktop-dst := base-dir / 'share' / 'applications' / appid + '.desktop'
 icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '.svg'
@@ -56,14 +56,15 @@ install:
 
 # Uninstalls installed files
 uninstall:
-    rm {{bin-dst}} {{desktop-dst}} {{icon-dst}}
+    rm {{bin-dst}} {{desktop-dst}} {{appdata-dst}} {{icon-dst}}
 
-# Vendor dependencies locally
+# Vendor dependencies locally into vendor.tar
 vendor:
+    rm -rf .cargo vendor vendor.tar
     mkdir -p .cargo
     cargo vendor --sync Cargo.toml | head -n -1 > .cargo/config.toml
     echo 'directory = "vendor"' >> .cargo/config.toml
-    echo >> .cargo/config.toml
+    tar pcf vendor.tar .cargo vendor
     rm -rf .cargo vendor
 
 # Extracts vendored dependencies

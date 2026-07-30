@@ -90,22 +90,29 @@ check_dependencies() {
 # CARGO_FEATURES is set to "release-build" by the packaging targets, which forces
 # diagnostic logging off at compile time (see src/debug.rs).
 CARGO_FEATURES="${CARGO_FEATURES:-}"
+# Extra cargo flags. The packaging targets add --locked so a distributable
+# artifact is always built from exactly the dependency set in Cargo.lock.
+CARGO_FLAGS="${CARGO_FLAGS:-}"
 
 do_build() {
+    # ${CARGO_FLAGS} is deliberately unquoted: it holds zero or more flags.
     if [ -n "${CARGO_FEATURES}" ]; then
         step "Building ${APP_NAME} (release mode, features: ${CARGO_FEATURES})..."
-        cargo build --release --features "${CARGO_FEATURES}"
+        # shellcheck disable=SC2086
+        cargo build --release ${CARGO_FLAGS} --features "${CARGO_FEATURES}"
     else
         step "Building ${APP_NAME} (release mode)..."
-        cargo build --release
+        # shellcheck disable=SC2086
+        cargo build --release ${CARGO_FLAGS}
     fi
     success "Build complete: ${BIN_SRC}"
 }
 
 # Everything that produces a distributable artifact goes through here, so the
-# release-build feature can't be forgotten on one path.
+# release-build feature and --locked can't be forgotten on one path.
 do_release_build() {
     CARGO_FEATURES="release-build"
+    CARGO_FLAGS="--locked"
     info "Release build — diagnostic logging forced OFF"
     do_build
 }
@@ -216,20 +223,26 @@ do_reload_panel() {
     # It didn't come back — start it ourselves, inheriting the session
     # environment from another COSMIC process so it can reach the compositor.
     warn "cosmic-session did not restart the panel; starting it directly..."
-    local src
-    src="$(pgrep -x cosmic-osd || pgrep -x cosmic-bg || pgrep -x cosmic-comp | head -1)"
+    local src="" proc
+    for proc in cosmic-osd cosmic-bg cosmic-comp; do
+        src="$(pgrep -x "${proc}" | head -1)"
+        if [ -n "${src}" ]; then
+            break
+        fi
+    done
     if [ -z "${src}" ]; then
         error "Could not find a COSMIC process to source the session environment from."
         info  "Start the panel manually with: cosmic-panel &"
         return 1
     fi
 
-    local envvars
-    envvars="$(tr '\0' '\n' < "/proc/${src}/environ" 2>/dev/null | grep -E \
-        '^(WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_DATA_DIRS|XDG_CONFIG_DIRS|HOME|USER|PATH|DISPLAY)=')"
+    # One array element per variable, so values containing spaces (PATH,
+    # DBUS_SESSION_BUS_ADDRESS) survive intact instead of being word-split.
+    local -a envvars=()
+    mapfile -t envvars < <(tr '\0' '\n' < "/proc/${src}/environ" 2>/dev/null | grep -E \
+        '^(WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_DATA_DIRS|XDG_CONFIG_DIRS|HOME|USER|PATH|DISPLAY)=' || true)
 
-    # shellcheck disable=SC2086
-    setsid env ${envvars} nohup cosmic-panel >/dev/null 2>&1 &
+    setsid env "${envvars[@]}" nohup cosmic-panel >/dev/null 2>&1 &
     sleep 3
 
     if pgrep -x cosmic-panel &>/dev/null; then
@@ -337,8 +350,9 @@ do_package_deb() {
     info "Release build — diagnostic logging forced OFF"
     mkdir -p "${DIST_DIR}" "${CARGO_TARGET_DIR}"
     stage_metainfo "${CARGO_TARGET_DIR}/app.metainfo.xml"
-    # cargo-deb runs its own build, so the feature has to be passed through.
-    cargo deb -- --features release-build
+    # cargo-deb runs its own build, so the feature (and --locked) have to be
+    # passed through to it.
+    cargo deb -- --features release-build --locked
     cp "${CARGO_TARGET_DIR}/debian/"*.deb "${DIST_DIR}/"
     success "Created .deb in ${DIST_DIR}/"
 }

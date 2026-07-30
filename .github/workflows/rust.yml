@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# CI only reads the repository; never hand it a writable token.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -15,7 +19,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v7
+    # Third-party actions are pinned to commit SHAs so a moved tag can't
+    # silently change what runs with our token (supply-chain hardening).
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
     - name: Install system dependencies
       run: |
@@ -33,9 +39,11 @@ jobs:
           pkg-config
 
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --verbose --locked
+    - name: Clippy (deny warnings)
+      run: cargo clippy --all-features --locked -- -D warnings
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --verbose --locked

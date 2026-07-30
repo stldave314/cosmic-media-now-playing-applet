@@ -31,7 +31,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     name: release (${{ matrix.arch }})
     steps:
-      - uses: actions/checkout@v7
+      # Third-party actions are pinned to commit SHAs so a moved tag can't
+      # silently change what runs with our token (supply-chain hardening).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install system dependencies
         run: |
@@ -49,19 +51,19 @@ jobs:
             pkg-config
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # Separate caches per architecture; artifacts aren't interchangeable.
           key: ${{ matrix.arch }}
 
       - name: Install packaging tools
-        run: cargo install cargo-deb cargo-generate-rpm
+        run: cargo install --locked cargo-deb cargo-generate-rpm
 
       - name: Build packages
         run: ./install.sh package
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             dist/*.tar.gz

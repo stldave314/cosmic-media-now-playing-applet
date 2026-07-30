@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>com.github.cosmic_media_now_playing_applet</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>GPL-3.0</project_license>
+  <project_license>GPL-3.0-only</project_license>
   <name>Now Playing</name>
   <summary>A COSMIC panel applet that displays the currently playing media track</summary>
 
