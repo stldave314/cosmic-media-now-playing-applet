@@ -1,21 +1,28 @@
 name: Release
 
 # Cut a release by pushing a version tag, e.g.:
-#   git tag v0.5.0 && git push origin v0.5.0
+#   git tag -a v0.5.0 -m "..." && git push origin v0.5.0
+#
+# Use an *annotated* tag: its message becomes the release body (the generated
+# commit list is appended below it). A lightweight tag still works, but leaves
+# the release with nothing but the auto-generated changelog.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
+  # Build each architecture natively and hand the packages to `publish` as
+  # artifacts. This job deliberately has NO write permission and does not touch
+  # the release: it runs once per architecture, so creating the release here
+  # would have both runners racing to create and re-generate the same release.
+  build:
+    permissions:
+      contents: read
     # Built natively on each architecture rather than cross-compiled: libcosmic
     # needs a pile of system libraries (fontconfig, freetype, xkbcommon, gbm,
     # seat, udev …), and sourcing ARM64 versions of those on an x86_64 host is
@@ -29,7 +36,7 @@ jobs:
           - runner: ubuntu-24.04-arm
             arch: aarch64
     runs-on: ${{ matrix.runner }}
-    name: release (${{ matrix.arch }})
+    name: build (${{ matrix.arch }})
     steps:
       # Third-party actions are pinned to commit SHAs so a moved tag can't
       # silently change what runs with our token (supply-chain hardening).
@@ -62,6 +69,47 @@ jobs:
       - name: Build packages
         run: ./install.sh package
 
+      - name: Upload packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: packages-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publishes exactly once, after every architecture has built, so the release
+  # is created in a single place with the full set of artifacts attached.
+  publish:
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so the annotated tag's message can be read below.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Download packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist
+
+      # The tag annotation is the human-written changelog and is what the
+      # release page should lead with. `git for-each-ref` prints only the
+      # message body, without the PGP signature a signed tag would carry.
+      - name: Build release notes from the tag message
+        run: |
+          git for-each-ref "refs/tags/${GITHUB_REF_NAME}" \
+            --format='%(contents:subject)%0a%0a%(contents:body)' > release-body.md
+          echo "--- release body ---"
+          cat release-body.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
@@ -69,5 +117,6 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.rpm
+          body_path: release-body.md
           generate_release_notes: true
           fail_on_unmatched_files: true
