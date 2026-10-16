@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="resources/screenshot-popup.png" alt="The applet on the COSMIC panel with hover controls, and its popup showing album art (placeholder graphic), seek bar, playback controls, and the pause-before-next-track switch" width="460">
+  <img src="resources/screenshot-popup.png" alt="The applet on the COSMIC panel and its popup: placeholder cover art over a blurred backdrop of the same cover, title and artist, seek bar, playback controls, the next queued track, and the pause-before-next-track switch" width="460">
 </p>
 
 ---
@@ -44,7 +44,7 @@
 
 **cosmic-media-now-playing-applet** is a lightweight panel applet that integrates with any [MPRIS](https://specifications.freedesktop.org/mpris-spec/latest/)-compatible media player (Spotify, Firefox, Chromium, VLC, Rhythmbox, Amberol, …) and shows the currently playing track directly on your COSMIC panel bar.
 
-On the panel it displays the album art (or a music-note icon) next to the track title, and reveals inline playback controls on hover. Clicking anywhere on the widget opens a popup with larger album art, a seekable progress bar, playback controls, a player selector, a one-shot "pause before playing next track" switch, and settings. Long titles scroll in a marquee (which you can slow, speed up, or turn off). When nothing is playing, the applet takes up **zero** panel space.
+On the panel it displays the album art (or a music-note icon) next to the track title, and reveals inline playback controls on hover. Clicking anywhere on the widget opens a popup drawn over a blurred copy of the album art, with the cover itself, a seekable progress bar, playback controls, a player selector, a one-shot "pause before playing next track" switch, and settings. Long titles scroll in a marquee (which you can slow, speed up, or turn off). When nothing is playing, the applet takes up **zero** panel space.
 
 It's **pure Rust** — no C D-Bus bindings — and every setting persists across restarts via COSMIC's `cosmic-config`.
 
@@ -52,7 +52,7 @@ It's **pure Rust** — no C D-Bus bindings — and every setting persists across
 
 ## Screenshots
 
-> **Note:** the album art in these screenshots is a placeholder graphic, substituted for the real cover art to avoid redistributing copyrighted images. The applet displays whatever artwork your player provides. Surrounding panel applets are blurred for privacy.
+> **Note:** the album art in these screenshots is placeholder artwork, not a real album cover, to avoid redistributing copyrighted images; the track and artist in the popup screenshot are made up to match. The applet displays whatever artwork your player provides. Surrounding panel applets and windows are blurred for privacy.
 
 On the panel, the applet sits inline with your other applets — album art thumbnail plus the track title, which **scrolls as a marquee** when it's too long to fit:
 
@@ -60,12 +60,20 @@ On the panel, the applet sits inline with your other applets — album art thumb
   <img src="resources/screenshot-panel.png" alt="The applet on the COSMIC panel showing the album art thumbnail (placeholder graphic) and a long track title scrolling as a marquee" width="820">
 </p>
 
-The hero image above shows the same widget with its **inline hover controls** (previous / play-pause / next) alongside the **media popup** — album art, title and artist, the seekable progress bar with elapsed and total time, playback controls, and the *pause before playing next track* switch.
+The hero image above shows the same widget alongside its **media popup** — album art, title and artist, the seekable progress bar with elapsed and total time, playback controls, the next queued track, and the *pause before playing next track* switch.
+
+The popup takes its colors from the cover: a blurred copy of the art fills the background, under a dark gradient that keeps the white text and controls readable on any image, from a pure-white sleeve to a busy, high-contrast one. Over art the popup is always light-on-dark, even with a light system theme, and it's outlined in the same color and thickness as COSMIC's active-window hint. With no art it falls back to the normal COSMIC popup surface and your theme's colors.
+
+Hover over the applet on the panel for **inline controls** (previous / play-pause / next / stop) without opening the popup:
+
+<p align="center">
+  <img src="resources/screenshot-hover.png" alt="The applet on the COSMIC panel with its hover controls: the album art thumbnail, then previous, pause, next, and stop" width="820">
+</p>
 
 The **settings view**, reached via the gear icon, keeps every option on one compact screen:
 
 <p align="center">
-  <img src="resources/screenshot-settings.png" alt="Settings view: widget width, top/left/right margins, scroll speed, display format, panel icon, album art size, icon spacing, hover controls toggle, and the version and update-check row" width="420">
+  <img src="resources/screenshot-settings.png" alt="Settings view: widget width, top/left/right margins, scroll speed, display format, panel icon, album art size, icon spacing, clear title when idle, hover controls toggle, and the version and update-check row" width="420">
 </p>
 
 ---
@@ -83,6 +91,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | ⏩ **Seekable progress bar** | Scrub the track with a draggable slider and elapsed / total time — updated smoothly, not once a second |
 | ⏸️ **Pause before next track** | Arm a one-shot stop: the current track finishes, then playback halts before the next one starts. Ideal for ending a session on the track you're on |
 | ⏭️ **Next-track preview** | Shows the upcoming queued track for players that expose the MPRIS `TrackList` interface |
+| 🌫️ **Album-art backdrop** | The popup is drawn over a blurred copy of the cover, with a gradient that keeps text and controls readable on any image |
 | 🔗 **Click art to open source** | Clicking the popup album art opens the track's URL (e.g. the YouTube tab) in your browser — `http(s)` links only |
 | 🎛️ **Player selector** | Choose which player to control when several are active |
 | 🔄 **Auto-switching** | Automatically follows whichever player starts playing |
@@ -113,6 +122,7 @@ The applet loads art from whatever the player exposes:
 MPRIS metadata is treated as **untrusted input** — any process on the session bus can publish it — so every path it can influence is bounded:
 
 - **Art file reads** accept only regular files up to a size cap, opened non-blocking (a device node, FIFO, or huge file is refused, not read). Sandbox lookups go through the mount namespace of the *player that published the URL*, never a scan of other processes.
+- **Art images** are checked before decoding: anything claiming more than 4096 pixels on a side is refused, so a tiny file can't make the applet allocate gigabytes. Oversized art shows the music-note placeholder instead.
 - **Art downloads** are size-capped while streaming, time-limited, and use certificate-validated TLS (rustls with the system trust store) for `https://`.
 - **Clicking album art** forwards only well-formed `http(s)` URLs to the browser — never `file://` paths or custom protocol schemes.
 - **Nothing is written to disk** except your settings (via `cosmic-config`); nothing leaves the machine except the art fetches above and the explicit, user-initiated update check against GitHub.
@@ -248,7 +258,7 @@ Because a stopped applet is invisible, the settings popup isn't reachable while 
 
 Below the playback controls is a switch that arms a **one-shot stop**: the current track plays to the end, then playback halts before the next one starts, and stays paused until you press play. It's for stepping away without cutting off what's playing.
 
-- While armed, the control is **outlined in your accent colour** so the pending stop is obvious. Clicking anywhere on it — switch, label, or padding — toggles it.
+- While armed, the control is **outlined in your accent color** so the pending stop is obvious. Clicking anywhere on it — switch, label, or padding — toggles it.
 - It **disarms itself** after firing, and pressing play/pause manually also cancels it.
 - It's **disabled when there is no next track** (MPRIS `CanGoNext`).
 - It stops shortly *before* the current track ends, so the player never advances into the next one.
@@ -350,7 +360,7 @@ Stored via `cosmic-config` at:
 - **Pausing before the next track** — MPRIS has no "stop after current track", so this is built on top of it. Reacting to the track *change* is a race that can't be won: by the time any client observes the new track, the player is already producing audio. So the watcher is **predictive** — it tracks position against duration and pauses 300 ms before the end, meaning the player never advances at all. It sleeps exactly as long as it needs to reach that point (capped at 500 ms), costing only a handful of D-Bus calls per track. Detecting the track change remains a fallback for cases prediction can't cover — unknown duration (live streams), gapless/crossfaded transitions, or a manual skip — where it pauses and rewinds the new track to 0:00.
 - **Track identity** — "has the track changed?" is keyed on a composite of `mpris:trackid` + `xesam:url` + title + artist, because some players (notably browsers) reuse a single track id for a whole session. MPRIS delivers Metadata as one dict, so these fields change together and can't disagree mid-update.
 - **Constants vs. settings** — values a user should control live in `config.rs` (persisted via `cosmic-config`, with UI and validation); internal tuning values live in `constants.rs` as compile-time constants. Package metadata such as the update URL and user agent is derived from `Cargo.toml` via `env!("CARGO_PKG_*")` so it has a single source of truth.
-- **Diagnostic logging** — `debug.rs` writes categorised diagnostics to a file rather than stderr, since an applet's stderr is piped to `cosmic-panel` and ends up on the session TTY. It's gated on a compile-time constant, so when disabled the `debug_log!` macro's body is dead code and the optimiser removes it entirely — no formatting, no I/O, and the log path doesn't even appear in the binary. Set `DEVELOPER_LOGGING` in `debug.rs` to enable it while debugging; the packaging targets build with the `release-build` feature, which forces it off so a release can never ship with logging on.
+- **Diagnostic logging** — `debug.rs` writes categorized diagnostics to a file rather than stderr, since an applet's stderr is piped to `cosmic-panel` and ends up on the session TTY. It's gated on a compile-time constant, so when disabled the `debug_log!` macro's body is dead code and the optimizer removes it entirely — no formatting, no I/O, and the log path doesn't even appear in the binary. Set `DEVELOPER_LOGGING` in `debug.rs` to enable it while debugging; the packaging targets build with the `release-build` feature, which forces it off so a release can never ship with logging on.
 - **Hover detection** — because the applet surface is autosized to exactly the widget, the pointer leaves the *surface* rather than crossing widget bounds, which a `mouse_area`'s hover state doesn't track reliably. Hover is instead detected via a raw `CursorMoved` / `CursorLeft` subscription filtered to the applet's own surface. The whole widget is one button (so any click opens the popup) while nested control buttons capture their own clicks.
 - **Auto-switching** — detects a player transitioning from paused to playing and switches focus to it.
 - **Debounced panel resizing** — width changes commit only after 1.5 s of inactivity, sending a single clean resize request instead of many rapid ones that could overlap applets.
@@ -368,7 +378,7 @@ Stored via `cosmic-config` at:
 
 **The applet vanished while music was paused.** Either the STOP button was pressed, or **Clear Title When Idle** is enabled and its timer elapsed (it's Off unless you turned it on). Press play in your player, or change track, and it returns. To change the timing, bring the applet back first, then open settings; the value also lives at `~/.config/cosmic/com.github.cosmic_media_now_playing_applet/v1/idle_clear_minutes`.
 
-**"Pause before playing next track" is greyed out.** The player is reporting no next track (`CanGoNext = false`) — common for a single stream or the last item in a queue.
+**"Pause before playing next track" is grayed out.** The player is reporting no next track (`CanGoNext = false`) — common for a single stream or the last item in a queue.
 
 **It still plays a moment of the next track.** The pre-emptive stop relies on the player reporting a usable `Position` and `mpris:length`. When either is missing or stale — live streams, and some browser-hosted players — prediction isn't possible, and the applet falls back to reacting to the track change, which inherently lands slightly late. It then rewinds the new track to 0:00 so play resumes from its start.
 

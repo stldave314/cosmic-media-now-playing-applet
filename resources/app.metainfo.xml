@@ -7,7 +7,7 @@
   <summary>A COSMIC panel applet that displays the currently playing media track</summary>
 
   <!-- Links this component to the installed .desktop file. Without it a
-       desktop-application component is invalid, and software centres can't
+       desktop-application component is invalid, and software centers can't
        reliably match the metadata to the installed application. -->
   <launchable type="desktop-id">com.github.cosmic_media_now_playing_applet.desktop</launchable>
 
@@ -46,11 +46,32 @@
 
   <content_rating type="oars-1.1"/>
 
+  <!-- Software centers fetch these by URL, so they point at the published
+       copies rather than the files in resources/. -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>The popup with album art, a seekable progress bar, and playback controls</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-popup.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The current track scrolling on the panel</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-panel.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Playback controls on the panel, shown on hover</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-hover.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Panel display settings</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-settings.png</image>
+    </screenshot>
+  </screenshots>
+
   <provides>
     <binary>cosmic-media-now-playing-applet</binary>
   </provides>
 
-  <!-- Version history. Software centres compare the newest entry here against
+  <!-- Version history. Software centers compare the newest entry here against
        what's installed, so this must match the packaged version — the packaging
        targets in install.sh rewrite it from Cargo.toml rather than relying on
        it being updated by hand. -->

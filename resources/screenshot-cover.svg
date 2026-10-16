@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Original placeholder cover art for the popup screenshot. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" viewBox="0 0 900 900">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a0b3d"/>
+      <stop offset="0.45" stop-color="#6a1b9a"/>
+      <stop offset="0.72" stop-color="#ff5e7e"/>
+      <stop offset="1" stop-color="#ffb36b"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff3a8"/>
+      <stop offset="1" stop-color="#ff7a59"/>
+    </linearGradient>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b0f4f"/>
+      <stop offset="1" stop-color="#0a0420"/>
+    </linearGradient>
+    <clipPath id="sunclip">
+      <rect x="0" y="0" width="900" height="300"/>
+      <rect x="0" y="312" width="900" height="26"/>
+      <rect x="0" y="350" width="900" height="22"/>
+      <rect x="0" y="384" width="900" height="18"/>
+      <rect x="0" y="414" width="900" height="14"/>
+      <rect x="0" y="440" width="900" height="10"/>
+      <rect x="0" y="462" width="900" height="8"/>
+    </clipPath>
+  </defs>
+  <rect width="900" height="560" fill="url(#sky)"/>
+  <g fill="#fff" opacity="0.8">
+    <circle cx="90" cy="80" r="2"/><circle cx="210" cy="140" r="1.5"/><circle cx="330" cy="60" r="2"/>
+    <circle cx="610" cy="90" r="1.5"/><circle cx="760" cy="50" r="2.2"/><circle cx="820" cy="170" r="1.4"/>
+    <circle cx="140" cy="220" r="1.2"/><circle cx="700" cy="230" r="1.3"/><circle cx="470" cy="40" r="1.6"/>
+  </g>
+  <circle cx="450" cy="390" r="190" fill="url(#sun)" clip-path="url(#sunclip)"/>
+  <path d="M0 560 L120 430 L210 500 L330 380 L450 520 L560 410 L680 490 L790 400 L900 470 L900 560 Z" fill="#3a1060" opacity="0.85"/>
+  <path d="M0 560 L90 500 L200 540 L300 470 L420 545 L540 480 L660 540 L780 470 L900 530 L900 560 Z" fill="#26093f"/>
+  <rect y="560" width="900" height="340" fill="url(#sea)"/>
+  <g stroke="#ff5e9e" stroke-width="2" opacity="0.55">
+    <line x1="0" y1="600" x2="900" y2="600"/><line x1="0" y1="650" x2="900" y2="650"/>
+    <line x1="0" y1="720" x2="900" y2="720"/><line x1="0" y1="810" x2="900" y2="810"/>
+    <line x1="450" y1="560" x2="450" y2="900"/>
+    <line x1="450" y1="560" x2="250" y2="900"/><line x1="450" y1="560" x2="650" y2="900"/>
+    <line x1="450" y1="560" x2="40" y2="900"/><line x1="450" y1="560" x2="860" y2="900"/>
+    <line x1="450" y1="560" x2="-200" y2="900"/><line x1="450" y1="560" x2="1100" y2="900"/>
+  </g>
+  <rect y="558" width="900" height="4" fill="#ffd0e0" opacity="0.7"/>
+</svg>

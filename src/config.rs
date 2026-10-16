@@ -104,7 +104,7 @@ impl Default for NowPlayingConfig {
             display_format: DisplayFormat::default(),
             top_margin: 0,
             // A little inset by default so the icon isn't flush against the
-            // neighbouring applet.
+            // neighboring applet.
             left_margin: 5,
             right_margin: 0,
             selected_player: None,

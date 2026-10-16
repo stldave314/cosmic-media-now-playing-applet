@@ -36,6 +36,76 @@ pub const MUSIC_NOTE_SIZE: f32 = 16.0;
 /// its spacing. Used to decide whether all three controls fit.
 pub const CONTROL_BUTTON_WIDTH: f32 = 34.0;
 
+// ── Media popup ─────────────────────────────────────────────────────────────
+
+/// Width of the media popup. libcosmic fixes every applet popup at this width
+/// (see `popup_container`); the backdrop's proportions are derived from it.
+pub const POPUP_WIDTH: f32 = 360.0;
+
+/// Edge length in pixels of the album-art card in the media popup.
+pub const POPUP_ART_SIZE: f32 = 220.0;
+
+/// Edge length in pixels of the square the cover is cropped to for the art
+/// card. Twice [`POPUP_ART_SIZE`], so the card stays sharp at up to 200%
+/// display scaling. The cover is cropped up front because the image widget
+/// doesn't clip a cover-fitted image to its bounds: a wide video thumbnail
+/// would otherwise spill out across the popup.
+///
+/// Smaller covers are scaled *up* to this with a smooth filter. Browsers often
+/// publish tiny art (Firefox-based ones hand over 60 × 60 for YouTube Music),
+/// and the renderer's own upscaling of that looks far blockier.
+pub const ART_CARD_PIXELS: u32 = 440;
+
+/// Size in pixels of the blurred backdrop image. The cover is shrunk to this
+/// before blurring and the renderer stretches it back up to fill the popup:
+/// blur throws away exactly the detail that shrinking loses, so the result
+/// looks the same as blurring the full-size cover at a fraction of the cost.
+///
+/// Portrait, roughly the popup's own shape, because the backdrop is stretched
+/// to the popup's exact bounds rather than cover-fitted: the software renderer
+/// draws a cover-fitted image past its bounds, which would put the image's
+/// corners outside the popup.
+///
+/// Fine enough that one backdrop pixel (2.5 logical pixels across) is smaller
+/// than [`BACKDROP_CORNER_MARGIN`], so the cut corners land cleanly inside the
+/// popup's curve.
+pub const BACKDROP_WIDTH: u32 = 144;
+pub const BACKDROP_HEIGHT: u32 = 224;
+
+/// Gaussian blur strength applied to the backdrop, in backdrop pixels. The
+/// popup is two and a half times wider than [`BACKDROP_WIDTH`], so on screen
+/// this is about two and a half times larger.
+pub const BACKDROP_BLUR_SIGMA: f32 = 11.2;
+
+/// How much rounder than the popup's own corners the backdrop's corners are
+/// cut, in logical pixels. The software renderer can't round a scaled image's
+/// corners to match the popup, so the backdrop carries its own transparent
+/// corners, cut slightly wider so that no image ever shows outside the
+/// popup's curve. The sliver this leaves is filled with the cover's average
+/// color, so it doesn't show.
+///
+/// The margin also has to absorb the renderer's smoothing when it stretches
+/// the backdrop, which carries the cut edge about two backdrop pixels
+/// (five logical pixels) outward.
+pub const BACKDROP_CORNER_MARGIN: f32 = 6.0;
+
+/// The dark gradient drawn between the backdrop and the popup's content. It is
+/// what keeps white text and controls readable on any cover, including a
+/// pure-white one, so the opacities are the trade-off between a vivid backdrop
+/// and guaranteed contrast. Each entry is `(position, black opacity)`, with
+/// position running from the top of the popup (0.0) to the bottom (1.0).
+///
+/// The art card and header pills sit in the lighter top part; all text sits
+/// below the 0.62 stop, where white text on a white cover is still about 8:1.
+pub const BACKDROP_SCRIM: [(f32, f32); 3] = [(0.0, 0.45), (0.62, 0.72), (1.0, 0.80)];
+
+/// Largest album-art width or height accepted, checked from the image header
+/// before anything is decoded. A few kilobytes of compressed data can claim
+/// enormous dimensions, and decoding allocates width × height × 4 bytes, so
+/// art beyond this is refused rather than decoded. Real cover art is far
+/// smaller; 4096² still costs 64 MiB once decoded.
+pub const MAX_ART_DIMENSION: u32 = 4096;
+
 // ── Timing ──────────────────────────────────────────────────────────────────
 
 /// How often the applet polls MPRIS for player state.

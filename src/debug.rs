@@ -9,7 +9,7 @@
 //!
 //! Logging is gated on the [`ENABLED`] constant so it can be compiled out
 //! entirely: when it is `false` the `debug_log!` macro's body is unreachable and
-//! the optimiser removes it, leaving no formatting cost and no file I/O. The
+//! the optimizer removes it, leaving no formatting cost and no file I/O. The
 //! arguments are still type-checked either way, so disabled call sites can't rot.
 //!
 //! ```ignore

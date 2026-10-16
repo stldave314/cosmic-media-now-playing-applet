@@ -2,17 +2,20 @@
 
 use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
 use crate::constants::{
-    APPROX_CHAR_WIDTH, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS, MAX_ART_FILE_BYTES,
-    MAX_ART_HTTP_BYTES, MPRIS_POLL_INTERVAL_MS, MUSIC_NOTE_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
+    APPROX_CHAR_WIDTH, BACKDROP_CORNER_MARGIN, BACKDROP_SCRIM, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS,
+    MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_POLL_INTERVAL_MS,
+    MUSIC_NOTE_SIZE, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
+use crate::backdrop;
 use crate::fl;
 use crate::mpris;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::Vertical;
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
-use cosmic::iced::{window::Id, Length, Limits, Subscription};
+use cosmic::iced::widget::image::Handle as ImageHandle;
+use cosmic::iced::{window::Id, Color, Length, Limits, Subscription};
 use cosmic::prelude::*;
 use cosmic::widget;
 use futures_util::SinkExt;
@@ -52,7 +55,18 @@ pub struct NowPlaying {
     /// Current track album art URL from MPRIS.
     art_url: Option<String>,
     /// Loaded album art image for the popup.
-    art_image: Option<cosmic::iced::widget::image::Handle>,
+    art_image: Option<ImageHandle>,
+    /// `art_image` cropped to a square for the popup's art card. Rendered off
+    /// the UI thread after the art loads, so briefly `None` for new art.
+    art_card: Option<ImageHandle>,
+    /// Blurred copy of `art_image` drawn behind the media popup, with the
+    /// cover's average color to fill under its rounded corners. Rendered
+    /// alongside `art_card`.
+    art_backdrop: Option<(ImageHandle, Color)>,
+    /// The system's dark theme, applied to the popup content while it sits on
+    /// the backdrop so the player picker and switch stay light-on-dark even
+    /// when the desktop uses a light theme. Refreshed when the popup opens.
+    dark_theme: cosmic::Theme,
     /// List of currently active media players.
     players: Vec<mpris::PlayerInfo>,
     /// Playback status of the selected player.
@@ -148,6 +162,9 @@ impl Default for NowPlaying {
             popup_state: PopupState::default(),
             art_url: None,
             art_image: None,
+            art_card: None,
+            art_backdrop: None,
+            dark_theme: cosmic::Theme::dark(),
             players: Vec::new(),
             playback_status: "Stopped".to_string(),
             active_player_bus: None,
@@ -226,6 +243,175 @@ fn labeled_control<'a>(
         .push(widget::space::horizontal().width(Length::Fill))
         .push(control)
         .into()
+}
+
+/// Colors for the media popup. They depend on whether it is drawn over the
+/// album-art backdrop (always light-on-dark) or on the plain theme surface.
+#[derive(Clone, Copy)]
+struct Palette {
+    /// Text and icons.
+    ink: Color,
+    /// Secondary text: artist, times, the "Next:" line.
+    ink_dim: Color,
+    /// Pills behind the header controls.
+    chip: Color,
+    /// Pill behind the pause switch and the no-art placeholder.
+    pill: Color,
+    /// Unfilled part of the seek bar.
+    rail: Color,
+    /// Filled part of the seek bar, and its handle.
+    seek: Color,
+    /// The play/pause button, and the icon on it.
+    play: Color,
+    on_play: Color,
+    /// Outline of the armed pause switch.
+    accent: Color,
+}
+
+impl Palette {
+    /// Over the backdrop: white on the dark gradient, whatever the theme.
+    fn backdrop(dark_theme: &cosmic::Theme) -> Self {
+        Self {
+            ink: Color::WHITE,
+            ink_dim: with_alpha(Color::WHITE, 0.78),
+            chip: Color::from_rgba(0.0, 0.0, 0.0, 0.5),
+            pill: with_alpha(Color::WHITE, 0.1),
+            rail: with_alpha(Color::WHITE, 0.3),
+            seek: Color::WHITE,
+            play: Color::WHITE,
+            on_play: Color::from_rgb(0.07, 0.07, 0.07),
+            accent: dark_theme.cosmic().accent_color().into(),
+        }
+    }
+
+    /// On the ordinary popup surface: the theme's own colors.
+    fn themed(theme: &cosmic::Theme) -> Self {
+        let cosmic = theme.cosmic();
+        // Same source the applet popup surface takes its text color from.
+        let on: Color = cosmic.background(theme.transparent).on.into();
+        let accent: Color = cosmic.accent_color().into();
+        Self {
+            ink: on,
+            ink_dim: with_alpha(on, 0.78),
+            chip: with_alpha(on, 0.1),
+            pill: with_alpha(on, 0.08),
+            rail: with_alpha(on, 0.25),
+            seek: accent,
+            play: accent,
+            on_play: cosmic.on_accent_color().into(),
+            accent,
+        }
+    }
+}
+
+fn with_alpha(color: Color, a: f32) -> Color {
+    Color { a, ..color }
+}
+
+/// Move `from` a fraction `t` of the way toward `to`, keeping `from`'s alpha.
+fn blend(from: Color, to: Color, t: f32) -> Color {
+    Color {
+        r: from.r + (to.r - from.r) * t,
+        g: from.g + (to.g - from.g) * t,
+        b: from.b + (to.b - from.b) * t,
+        a: from.a,
+    }
+}
+
+/// A circular icon button in fixed colors, for the media popup. Hover and
+/// press tint the fill toward the icon color; a transparent button gains a
+/// faint disc instead.
+fn round_button<'a>(
+    icon: &'static str,
+    icon_size: u16,
+    diameter: f32,
+    fill: Color,
+    ink: Color,
+    on_press: Message,
+) -> Element<'a, Message> {
+    let style = move |t: f32| {
+        let background = if fill.a == 0.0 {
+            with_alpha(ink, t)
+        } else {
+            blend(fill, ink, t)
+        };
+        let mut s = widget::button::Style::new();
+        s.background = Some(cosmic::iced::Background::Color(background));
+        s.border_radius = (diameter / 2.0).into();
+        s.icon_color = Some(ink);
+        s.text_color = Some(ink);
+        s
+    };
+    // The icon is colored directly: the button's icon color doesn't reach an
+    // icon nested in a container, which then inherits the surrounding text
+    // color (white on the white play button).
+    let glyph = widget::icon::from_name(icon)
+        .size(icon_size)
+        .icon()
+        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(move |_| {
+            cosmic::iced::widget::svg::Style { color: Some(ink) }
+        })));
+    widget::button::custom(
+        widget::container(glyph)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(diameter))
+    .height(Length::Fixed(diameter))
+    .padding(0)
+    .class(cosmic::theme::Button::Custom {
+        active: Box::new(move |_, _| style(0.0)),
+        disabled: Box::new(move |_| style(0.0)),
+        hovered: Box::new(move |_, _| style(0.12)),
+        pressed: Box::new(move |_, _| style(0.2)),
+    })
+    .on_press(on_press)
+    .into()
+}
+
+/// A rounded container in fixed colors, optionally outlined.
+fn pill_class<'a>(
+    fill: Color,
+    ink: Color,
+    radius: f32,
+    outline: Option<Color>,
+) -> cosmic::theme::Container<'a> {
+    cosmic::theme::Container::custom(move |_| widget::container::Style {
+        background: Some(cosmic::iced::Background::Color(fill)),
+        text_color: Some(ink),
+        icon_color: Some(ink),
+        border: cosmic::iced::Border {
+            radius: radius.into(),
+            width: if outline.is_some() { 1.0 } else { 0.0 },
+            color: outline.unwrap_or(Color::TRANSPARENT),
+        },
+        ..Default::default()
+    })
+}
+
+/// The media popup's seek bar: a thin rail and a round handle.
+fn seek_slider_style(pal: Palette) -> cosmic::iced::widget::slider::Style {
+    use cosmic::iced::widget::slider;
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                cosmic::iced::Background::Color(pal.seek),
+                cosmic::iced::Background::Color(pal.rail),
+            ),
+            width: 4.0,
+            border: cosmic::iced::Border {
+                radius: 2.0.into(),
+                ..Default::default()
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 7.0 },
+            background: cosmic::iced::Background::Color(pal.seek),
+            border_width: 0.0,
+            border_color: Color::TRANSPARENT,
+        },
+        breakpoint: slider::Breakpoint { color: pal.rail },
+    }
 }
 
 impl NowPlaying {
@@ -350,22 +536,128 @@ impl NowPlaying {
         }
     }
 
-    /// The Media controls view with album art.
+    /// Show newly loaded album art and start rendering its popup card and
+    /// backdrop in the background. Art whose header claims oversized dimensions is refused
+    /// outright, before anything — the image widget included — decodes it.
+    fn set_art(&mut self, bytes: Vec<u8>) -> Task<cosmic::Action<Message>> {
+        self.art_card = None;
+        self.art_backdrop = None;
+        if !backdrop::within_limits(&bytes) {
+            crate::debug_log!(
+                crate::debug::ART,
+                "art refused: larger than {MAX_ART_DIMENSION}px on a side"
+            );
+            self.art_image = None;
+            return Task::none();
+        }
+        self.art_image = Some(ImageHandle::from_bytes(bytes.clone()));
+
+        let art_url = self.art_url.clone();
+        let radii = cosmic::theme::active().cosmic().corner_radii;
+        let card_radius = radii.radius_s[0];
+        let backdrop_radius = radii.radius_m[0] + BACKDROP_CORNER_MARGIN;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || backdrop::render(&bytes, card_radius, backdrop_radius))
+                    .await
+                    .ok()
+                    .flatten()
+            },
+            move |rendered| {
+                let handle = |p: backdrop::Pixels| ImageHandle::from_rgba(p.width, p.height, p.pixels);
+                cosmic::Action::App(Message::ArtRendered(
+                    art_url.clone(),
+                    rendered.map(|r| {
+                        let [red, green, blue] = r.average;
+                        (handle(r.card), (handle(r.backdrop), Color::from_rgb8(red, green, blue)))
+                    }),
+                ))
+            },
+        )
+    }
+
+    /// The media view: player picker, album art, track details, seek bar,
+    /// playback controls and the pause-before-next switch.
+    ///
+    /// Once the art's backdrop is ready, the content is laid over a blurred
+    /// copy of the cover behind a dark gradient ([`BACKDROP_SCRIM`]) and drawn
+    /// light-on-dark whatever the system theme, so it reads on any cover.
+    /// Without art it sits on the ordinary popup surface in theme colors.
     fn view_media(&self) -> Element<'_, Message> {
-        let art_inner: Element<'_, Message> = if let Some(handle) = &self.art_image {
-            widget::Image::new(handle.clone())
-                .border_radius([16.0; 4])
-                .content_fit(cosmic::iced::ContentFit::Cover)
-                .width(Length::Fixed(150.0))
-                .height(Length::Fixed(150.0))
-                .into()
+        let on_backdrop = self.art_backdrop.is_some();
+        let pal = if on_backdrop {
+            Palette::backdrop(&self.dark_theme)
         } else {
-            widget::icon::from_name("audio-x-generic-symbolic").size(128).into()
+            Palette::themed(&cosmic::theme::active())
+        };
+        let radii = cosmic::theme::active().cosmic().corner_radii;
+
+        // ── Header: player picker and settings ──
+        let settings_btn = round_button(
+            "emblem-system-symbolic",
+            16,
+            32.0,
+            pal.chip,
+            pal.ink,
+            Message::SwitchPopupView(PopupState::SettingsView),
+        );
+        let mut header = widget::row::with_capacity(3).align_y(Vertical::Center);
+        if !self.players.is_empty() {
+            let options: Vec<PlayerOption> = self.players.iter().map(|p| PlayerOption { identity: p.identity.clone(), bus_name: p.bus_name.clone() }).collect();
+            let selected_idx = options
+                .iter()
+                .position(|o| Some(&o.bus_name) == self.active_player_bus.as_ref())
+                .or(Some(0));
+            let picker = widget::dropdown(options.clone(), selected_idx, move |index| {
+                Message::SelectPlayer(options[index].bus_name.clone())
+            });
+            header = header.push(
+                widget::container(picker)
+                    .padding([0, 8])
+                    .height(Length::Fixed(32.0))
+                    .align_y(Vertical::Center)
+                    .class(pill_class(pal.chip, pal.ink, 16.0, None)),
+            );
+        }
+        let header = header
+            .push(widget::space::horizontal().width(Length::Fill))
+            .push(settings_btn);
+
+        // ── Album art card ──
+        let art_inner: Element<'_, Message> = if let Some(card) = &self.art_card {
+            // Already cropped square with its corners cut, so it fills the
+            // card exactly.
+            widget::Image::new(card.clone())
+                .filter_method(cosmic::iced::widget::image::FilterMethod::Linear)
+                .width(Length::Fixed(POPUP_ART_SIZE))
+                .height(Length::Fixed(POPUP_ART_SIZE))
+                .into()
+        } else if let Some(handle) = &self.art_image {
+            // The moment before the square crop is ready. The image widget
+            // draws a cover-fitted image past its own bounds, so clip it.
+            widget::container(
+                widget::Image::new(handle.clone())
+                    .filter_method(cosmic::iced::widget::image::FilterMethod::Linear)
+                    .content_fit(cosmic::iced::ContentFit::Cover)
+                    .width(Length::Fixed(POPUP_ART_SIZE))
+                    .height(Length::Fixed(POPUP_ART_SIZE)),
+            )
+            .width(Length::Fixed(POPUP_ART_SIZE))
+            .height(Length::Fixed(POPUP_ART_SIZE))
+            .clip(true)
+            .into()
+        } else {
+            widget::container(widget::icon::from_name("audio-x-generic-symbolic").size(96))
+                .center_x(Length::Fixed(POPUP_ART_SIZE))
+                .center_y(Length::Fixed(POPUP_ART_SIZE))
+                .class(pill_class(pal.pill, pal.ink_dim, radii.radius_s[0], None))
+                .into()
         };
 
         // Wrap art in a button when there's a URL to open; plain container otherwise.
         let art: Element<'_, Message> = if self.openable_track_url().is_some() {
             widget::button::custom(art_inner)
+                .padding(0)
                 .on_press(Message::OpenTrackUrl)
                 .class(cosmic::theme::Button::Text)
                 .into()
@@ -373,45 +665,29 @@ impl NowPlaying {
             art_inner
         };
 
-        let art_container = widget::container(art)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill);
-
+        // ── Title and artist: left-aligned, one line each, ellipsized ──
+        let one_line = cosmic::iced::core::text::Ellipsize::End(
+            cosmic::iced::core::text::EllipsizeHeightLimit::Lines(1),
+        );
         let title = widget::text::title3(if self.track_title.is_empty() {
             fl!("no-media")
         } else {
             self.track_title.clone()
-        });
-
-        let artist = widget::text::body(self.track_artist.clone());
-
-        let play_pause_icon = if self.playback_status == "Playing" {
-            "media-playback-pause-symbolic"
-        } else {
-            "media-playback-start-symbolic"
-        };
-        let btn_play_pause = widget::button::icon(widget::icon::from_name(play_pause_icon))
-            .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause));
-
-        // Only show skip buttons the active player supports.
-        let mut controls = widget::row::with_capacity(3)
-            .spacing(12)
-            .align_y(Vertical::Center);
-        if self.can_go_previous {
-            controls = controls.push(
-                widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
-                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous)),
-            );
-        }
-        controls = controls.push(btn_play_pause);
-        if self.can_go_next {
-            controls = controls.push(
-                widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
-                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Next)),
+        })
+        .class(cosmic::theme::Text::Color(pal.ink))
+        .ellipsize(one_line)
+        .width(Length::Fill);
+        let mut details = widget::column::with_capacity(2).spacing(2).push(title);
+        if !self.track_artist.is_empty() {
+            details = details.push(
+                widget::text::body(self.track_artist.clone())
+                    .class(cosmic::theme::Text::Color(pal.ink_dim))
+                    .ellipsize(one_line)
+                    .width(Length::Fill),
             );
         }
 
-        // Progress / seek bar — only shown when the player reports a known duration.
+        // ── Seek bar — only shown when the player reports a known duration ──
         let progress_bar: Option<Element<'_, Message>> = if self.length_us > 0 {
             // Interpolate the reported position forward by the time elapsed since
             // the last poll (while playing) so the bar advances smoothly between
@@ -434,62 +710,83 @@ impl NowPlaying {
                 (effective_us.max(0.0) / 1_000_000.0) as u64
             };
             let total_secs = (self.length_us as f64 / 1_000_000.0) as u64;
-            let time_label = widget::text::caption(format!(
-                "{}:{:02} / {}:{:02}",
-                elapsed_secs / 60, elapsed_secs % 60,
-                total_secs / 60,   total_secs % 60,
-            ));
+            let time = |secs: u64| {
+                widget::text::caption(format!("{}:{:02}", secs / 60, secs % 60))
+                    .class(cosmic::theme::Text::Color(pal.ink_dim))
+            };
+            let seek_style = move |_: &cosmic::Theme| seek_slider_style(pal);
             let seek_slider = widget::slider(0.0..=1.0, progress, Message::SeekSliderChanged)
                 .step(0.001)
-                .on_release(Message::SeekSliderReleased);
+                .on_release(Message::SeekSliderReleased)
+                .class(cosmic::theme::iced::Slider::Custom {
+                    active: std::rc::Rc::new(seek_style),
+                    hovered: std::rc::Rc::new(seek_style),
+                    dragging: std::rc::Rc::new(seek_style),
+                });
             Some(
                 widget::column::with_capacity(2)
                     .spacing(2)
                     .push(seek_slider)
-                    .push(widget::container(time_label).center_x(Length::Fill))
-                    .into()
+                    .push(
+                        widget::row::with_capacity(3)
+                            .push(time(elapsed_secs))
+                            .push(widget::space::horizontal().width(Length::Fill))
+                            .push(time(total_secs)),
+                    )
+                    .into(),
             )
         } else {
             None
         };
 
-        let settings_btn = widget::button::icon(widget::icon::from_name("emblem-system-symbolic"))
-            .on_press(Message::SwitchPopupView(PopupState::SettingsView));
-
-        let header = if self.players.is_empty() {
-            widget::row::with_capacity(2)
-                .push(widget::space::horizontal().width(Length::Fill))
-                .push(settings_btn)
-                .align_y(Vertical::Center)
+        // ── Playback controls; skip buttons only when the player supports them ──
+        let play_pause_icon = if self.playback_status == "Playing" {
+            "media-playback-pause-symbolic"
         } else {
-            let options: Vec<PlayerOption> = self.players.iter().map(|p| PlayerOption { identity: p.identity.clone(), bus_name: p.bus_name.clone() }).collect();
-            let selected_idx = options
-                .iter()
-                .position(|o| Some(&o.bus_name) == self.active_player_bus.as_ref())
-                .or(Some(0));
-            let picker = widget::dropdown(options.clone(), selected_idx, move |index| {
-                Message::SelectPlayer(options[index].bus_name.clone())
-            });
-            
-            widget::row::with_capacity(3)
-                .push(picker)
-                .push(widget::space::horizontal().width(Length::Fill))
-                .push(settings_btn)
-                .align_y(Vertical::Center)
+            "media-playback-start-symbolic"
         };
+        let mut controls = widget::row::with_capacity(3)
+            .spacing(20)
+            .align_y(Vertical::Center);
+        if self.can_go_previous {
+            controls = controls.push(round_button(
+                "media-skip-backward-symbolic",
+                22,
+                44.0,
+                Color::TRANSPARENT,
+                pal.ink,
+                Message::PlayerCommand(mpris::MprisCommand::Previous),
+            ));
+        }
+        controls = controls.push(round_button(
+            play_pause_icon,
+            26,
+            56.0,
+            pal.play,
+            pal.on_play,
+            Message::PlayerCommand(mpris::MprisCommand::PlayPause),
+        ));
+        if self.can_go_next {
+            controls = controls.push(round_button(
+                "media-skip-forward-symbolic",
+                22,
+                44.0,
+                Color::TRANSPARENT,
+                pal.ink,
+                Message::PlayerCommand(mpris::MprisCommand::Next),
+            ));
+        }
 
-        let mut content = widget::column::with_capacity(6)
-            .spacing(16)
-            .padding(16)
-            .align_x(cosmic::iced::alignment::Horizontal::Center)
+        let mut content = widget::column::with_capacity(7)
+            .spacing(14)
+            .padding([16, 20, 20, 20])
             .push(header)
-            .push(art_container)
-            .push(title)
-            .push(artist);
+            .push(widget::container(art).center_x(Length::Fill))
+            .push(details);
         if let Some(bar) = progress_bar {
             content = content.push(bar);
         }
-        content = content.push(controls);
+        content = content.push(widget::container(controls).center_x(Length::Fill));
 
         // "Next: …" — only for players that expose the TrackList interface.
         if let Some((next_title, next_artist)) = &self.next_track {
@@ -499,8 +796,12 @@ impl NowPlaying {
                 format!("{next_artist} — {next_title}")
             };
             content = content.push(
-                widget::container(widget::text::caption(format!("{}: {label}", fl!("next-label"))))
-                    .center_x(Length::Fill),
+                widget::container(
+                    widget::text::caption(format!("{}: {label}", fl!("next-label")))
+                        .class(cosmic::theme::Text::Color(pal.ink_dim))
+                        .ellipsize(one_line),
+                )
+                .center_x(Length::Fill),
             );
         }
 
@@ -518,30 +819,22 @@ impl NowPlaying {
             )
             .push(widget::text::body(fl!("pause-next-track")));
 
-        // While armed, outline it in the accent colour so the pending stop is
+        // While armed, outline it in the accent color so the pending stop is
         // unmistakable at a glance.
         let pause_container = widget::container(pause_row)
-            .padding([6, 10])
-            .class(cosmic::theme::Container::custom(move |theme| {
-                let cosmic = theme.cosmic();
-                let mut style = widget::container::Style {
-                    text_color: Some(theme.current_container().on.into()),
-                    ..Default::default()
-                };
-                if armed {
-                    style.border = cosmic::iced::Border {
-                        radius: cosmic.corner_radii.radius_s.into(),
-                        width: 1.0,
-                        color: cosmic.accent.base.into(),
-                    };
-                }
-                style
-            }));
+            .padding([7, 10])
+            .width(Length::Fill)
+            .class(pill_class(
+                pal.pill,
+                pal.ink,
+                radii.radius_s[0],
+                armed.then_some(pal.accent),
+            ));
 
         // The whole element — switch, label and padding — toggles the setting.
         // This must react on *release*: the toggler publishes on ButtonReleased
         // and captures it, so clicking the switch itself is handled once here
-        // rather than firing both handlers and cancelling itself out.
+        // rather than firing both handlers and canceling itself out.
         content = content.push(if can_toggle {
             Element::from(
                 widget::mouse_area(pause_container)
@@ -552,7 +845,95 @@ impl NowPlaying {
             Element::from(pause_container)
         });
 
-        self.core.applet.popup_container(content).into()
+        // Default text and icon colors for anything not styled above (the
+        // picker's label and chevron, the switch's label).
+        let content = widget::container(content).class(pill_class(
+            Color::TRANSPARENT,
+            pal.ink,
+            0.0,
+            None,
+        ));
+
+        let Some((backdrop, backdrop_average)) = &self.art_backdrop else {
+            return self.core.applet.popup_container(content).into();
+        };
+
+        // COSMIC's system-wide active hint — the colored outline around the
+        // focused window — drawn over the edge of the backdrop. Same color
+        // and thickness as the user's window outline; none if they turned it
+        // off.
+        let hint_theme = self.dark_theme.cosmic();
+        let hint_width = hint_theme.active_hint as f32;
+        let hint_color: Color = hint_theme
+            .window_hint
+            .map_or_else(|| hint_theme.accent_color().into(), Color::from);
+        let hint_layer = widget::container(widget::Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(cosmic::theme::Container::custom(move |_| widget::container::Style {
+                border: cosmic::iced::Border {
+                    radius: radii.radius_m.into(),
+                    width: hint_width,
+                    color: hint_color,
+                },
+                ..Default::default()
+            }));
+
+        // Layers, bottom to top: average color, blurred cover, dark gradient,
+        // content, active hint. The content is the stack's base layer, so it alone decides
+        // the popup's size; the other layers are stretched to match.
+        let mut scrim = cosmic::iced::gradient::Linear::new(cosmic::iced::Radians(std::f32::consts::PI));
+        for (position, opacity) in BACKDROP_SCRIM {
+            scrim = scrim.add_stop(position, Color::from_rgba(0.0, 0.0, 0.0, opacity));
+        }
+        let scrim_layer = widget::container(widget::Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(cosmic::theme::Container::custom(move |_| widget::container::Style {
+                background: Some(cosmic::iced::Background::Gradient(scrim.into())),
+                border: cosmic::iced::Border {
+                    radius: radii.radius_m.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }));
+        // Stretched to the popup's exact bounds (it is already roughly the
+        // popup's shape) and carrying its own transparent corners; see
+        // `BACKDROP_CORNER_MARGIN`. The software renderer neither clips a
+        // cover-fitted image nor rounds a scaled one to the right radius.
+        let backdrop_layer = widget::Image::new(backdrop.clone())
+            .filter_method(cosmic::iced::widget::image::FilterMethod::Linear)
+            .content_fit(cosmic::iced::ContentFit::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        // The cover's average color, as a correctly rounded panel, fills the
+        // slivers the backdrop's wider-cut corners leave.
+        let backdrop_average = *backdrop_average;
+        let average_layer = widget::container(widget::Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(cosmic::theme::Container::custom(move |_| widget::container::Style {
+                background: Some(cosmic::iced::Background::Color(backdrop_average)),
+                border: cosmic::iced::Border {
+                    radius: radii.radius_m.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }));
+
+        let layered = cosmic::iced::widget::Stack::new()
+            .push(content)
+            .push(hint_layer)
+            .push_under(scrim_layer)
+            .push_under(backdrop_layer)
+            .push_under(average_layer);
+
+        // Draw the content with the dark theme so themed widgets (the picker,
+        // the switch) match the light-on-dark text even on a light desktop.
+        let themed = cosmic::iced::widget::themer(Some(self.dark_theme.clone()), layered)
+            .text_color(|_| Color::WHITE);
+
+        self.core.applet.popup_container(themed).into()
     }
 
     /// The configuration popup window: width slider, scroll speed, display format, margin.
@@ -766,8 +1147,11 @@ pub enum Message {
     /// player that published it, so `file://` fallback reads stay scoped to
     /// that player's mount namespace.
     FetchAlbumArt(String, Option<String>),
-    /// Album art fetch completed.
-    AlbumArtLoaded(Option<cosmic::iced::widget::image::Handle>),
+    /// Album art fetch completed, with the raw image bytes.
+    AlbumArtLoaded(Option<Vec<u8>>),
+    /// The popup's art card and backdrop (with its average color) for the art
+    /// at this URL finished rendering. Ignored if the art has changed since.
+    ArtRendered(Option<String>, Option<(ImageHandle, (ImageHandle, Color))>),
     /// Send a command to the MPRIS player.
     PlayerCommand(crate::mpris::MprisCommand),
     /// The panel STOP control: pause the player if it's playing, then clear the
@@ -1190,6 +1574,9 @@ impl cosmic::Application for NowPlaying {
                 };
                 let new_id = Id::unique();
                 self.popup.replace(new_id);
+                // Pick up any change to the user's dark theme (accent color,
+                // contrast) since the popup was last shown.
+                self.dark_theme = cosmic::theme::system_dark();
                 let mut popup_settings = self.core.applet.get_popup_settings(
                     main_id,
                     new_id,
@@ -1435,9 +1822,11 @@ impl cosmic::Application for NowPlaying {
                 if art_changed {
                     self.art_url = art_url.clone();
                     self.art_image = None;
+                    self.art_card = None;
+                    self.art_backdrop = None;
                     if let Some(bytes) = art_bytes {
                         // Bytes were read inline while the temp file still existed.
-                        self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
+                        tasks.push(self.set_art(bytes));
                     } else if let Some(url) = art_url {
                         // For http:// and data: URLs, fetch asynchronously.
                         tasks.push(Task::done(cosmic::Action::App(Message::FetchAlbumArt(
@@ -1473,8 +1862,10 @@ impl cosmic::Application for NowPlaying {
                     if art_changed {
                         self.art_url = p.metadata.art_url;
                         self.art_image = None;
+                        self.art_card = None;
+                        self.art_backdrop = None;
                         if let Some(bytes) = p.metadata.art_bytes {
-                            self.art_image = Some(cosmic::iced::widget::image::Handle::from_bytes(bytes));
+                            return self.set_art(bytes);
                         } else if let Some(url) = self.art_url.clone() {
                             return Task::done(cosmic::Action::App(Message::FetchAlbumArt(
                                 url,
@@ -1587,8 +1978,26 @@ impl cosmic::Application for NowPlaying {
             Message::FetchAlbumArt(url, bus_name) => {
                 return Task::perform(fetch_album_art(url, bus_name), cosmic::Action::App);
             }
-            Message::AlbumArtLoaded(handle) => {
-                self.art_image = handle;
+            Message::AlbumArtLoaded(bytes) => {
+                if let Some(bytes) = bytes {
+                    return self.set_art(bytes);
+                }
+                self.art_image = None;
+                self.art_card = None;
+                self.art_backdrop = None;
+            }
+            Message::ArtRendered(art_url, rendered) => {
+                // Drop a result that finished after the track moved on.
+                if art_url == self.art_url && self.art_image.is_some() {
+                    crate::debug_log!(
+                        crate::debug::ART,
+                        "art card and backdrop: {}",
+                        if rendered.is_some() { "rendered" } else { "could not decode art" }
+                    );
+                    let (card, backdrop) = rendered.unzip();
+                    self.art_card = card;
+                    self.art_backdrop = backdrop;
+                }
             }
             Message::PlayerCommand(cmd) => {
                 // Any explicit play/pause disarms the pending pause so the user
@@ -1742,11 +2151,7 @@ impl cosmic::Application for NowPlaying {
 /// data is length-checked before decoding, and HTTP bodies are streamed against a
 /// byte cap under the shared client's timeout.
 async fn fetch_album_art(url: String, bus_name: Option<String>) -> Message {
-    Message::AlbumArtLoaded(
-        fetch_art_bytes(&url, bus_name.as_deref())
-            .await
-            .map(cosmic::iced::widget::image::Handle::from_bytes),
-    )
+    Message::AlbumArtLoaded(fetch_art_bytes(&url, bus_name.as_deref()).await)
 }
 
 async fn fetch_art_bytes(url: &str, bus_name: Option<&str>) -> Option<Vec<u8>> {

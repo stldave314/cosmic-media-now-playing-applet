@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-media-now-playing-applet"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "A COSMIC DE panel applet that displays the currently playing media track using MPRIS"
@@ -24,6 +24,9 @@ base64 = "0.23"
 # Only for O_NONBLOCK/O_NOCTTY/O_NOFOLLOW open(2) flags, which must come from
 # libc so they are correct on every architecture.
 libc = "0.2"
+# Decodes and blurs album art for the popup backdrop. Same version and codecs
+# libcosmic already builds, so this adds nothing new to compile.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [dependencies.i18n-embed]
 version = "0.16"
