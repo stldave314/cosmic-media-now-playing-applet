@@ -25,6 +25,7 @@
   - [Prerequisites](#prerequisites)
   - [Build & Install](#build--install)
   - [Install Script Commands](#install-script-commands)
+  - [Flatpak (COSMIC Store)](#flatpak-cosmic-store)
 - [Usage](#usage)
 - [Configuration](#configuration)
   - [Settings Reference](#settings-reference)
@@ -112,7 +113,7 @@ Anything implementing the [MPRIS D-Bus interface](https://specifications.freedes
 
 The applet loads art from whatever the player exposes:
 
-- **`file://` URLs** — read directly, or via `/proc/<pid>/root` to reach files inside Flatpak/Snap sandboxes
+- **`file://` URLs** — read directly, or via `/proc/<pid>/root` to reach files inside Flatpak/Snap sandboxes (native packages only; see [Flatpak (COSMIC Store)](#flatpak-cosmic-store))
 - **`data:` URIs** — base64-encoded inline images (used by Firefox)
 - **`https://` URLs** — fetched over HTTP (Spotify, etc.)
 - **YouTube thumbnails** — derived from the track URL when a browser plays a YouTube video and the art file is otherwise inaccessible
@@ -210,7 +211,7 @@ A custom prefix is supported: `PREFIX=/usr/local ./install.sh build-install`.
 
 ### Building Release Packages
 
-Native packages are the right format for a COSMIC applet — they install the binary **and** the `.desktop` entry the panel needs to discover it (AppImage and Flatpak don't fit the applet model). Build them into `dist/`:
+Native packages install the binary **and** the `.desktop` entry the panel needs to discover it, and run unsandboxed, so every album-art source works (see [Flatpak (COSMIC Store)](#flatpak-cosmic-store) for the sandboxed build). Build them into `dist/`:
 
 | Command | Output |
 |---------|--------|
@@ -226,6 +227,35 @@ From a tarball, install without rebuilding: `BIN_SRC=./cosmic-media-now-playing-
 ```bash
 git tag v0.5.0 && git push origin v0.5.0
 ```
+
+### Flatpak (COSMIC Store)
+
+The COSMIC Store lists applets from the [COSMIC Flatpak repository](https://github.com/pop-os/cosmic-flatpak), which builds each one from a manifest. This project's manifest is [`flatpak/com.github.cosmic_media_now_playing_applet.json`](flatpak/com.github.cosmic_media_now_playing_applet.json); its build step runs `./install.sh flatpak-install`, so the Store build uses the same release-build path (logging forced off, `--locked`) as the native packages.
+
+| Command | Description |
+|---------|-------------|
+| `./install.sh package-flatpak` | Build the working tree as a Flatpak, install it for the current user, and write `dist/cosmic-media-now-playing-applet-<version>.flatpak`. Needs `flatpak install flathub org.flatpak.Builder`. `FLATPAK_JOBS=4` limits parallel jobs. |
+| `./install.sh flatpak-sources` | Regenerate `flatpak/cargo-sources.json` from `Cargo.lock` and point the manifest at the tag for the version in `Cargo.toml` |
+
+`cargo-sources.json` lists every crate so the build can run without network access. Regenerate it whenever `Cargo.lock` changes, or the Store build fails on a missing crate.
+
+**Publishing a release to the Store:**
+
+1. Tag and push the release as usual.
+2. Run `./install.sh flatpak-sources`.
+3. Copy `flatpak/com.github.cosmic_media_now_playing_applet.json` and `flatpak/cargo-sources.json` into `app/com.github.cosmic_media_now_playing_applet/` in a fork of [pop-os/cosmic-flatpak](https://github.com/pop-os/cosmic-flatpak), check it builds with `just build com.github.cosmic_media_now_playing_applet`, and open a pull request.
+
+**Sandbox permissions:**
+
+| Permission | Why |
+|------------|-----|
+| `--socket=wayland` | Draw on the panel |
+| `--talk-name=org.mpris.MediaPlayer2.*` | Read and control media players |
+| `--share=network` | Download `https://` album art and run the update check |
+| `--filesystem=xdg-config/cosmic:rw` | Settings, shared with the native build |
+| `--filesystem=xdg-cache:ro`, `--filesystem=~/.var/app:ro` | Album art that players cache on disk, including other Flatpak players |
+
+**Album art in the Flatpak build:** the sandbox has its own `/tmp` and can't see other processes, so a `file://` art path in the host's `/tmp` (where some browsers write it) can't be read, and neither the `/proc/<pid>/root` nor the Snap lookup is available. `https://` art, `data:` URIs, the YouTube thumbnail fallback, and files under `~/.cache` or `~/.var/app` still work. Use a native package if a player's art only shows up there.
 
 ---
 

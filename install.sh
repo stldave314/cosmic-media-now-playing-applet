@@ -21,13 +21,22 @@ APPDATA_DST_LEGACY="${PREFIX}/share/appdata/${APP_ID}.metainfo.xml"
 ICON_DST="${PREFIX}/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
 CONFIG_DIR="${HOME}/.config/cosmic/${APP_ID}"
 
+# Flatpak (COSMIC Store). The manifest in flatpak/ is what gets submitted to the
+# COSMIC Flatpak repository; its build step calls `install.sh flatpak-install`
+# so the Store build goes through the same release-build path as the others.
+FLATPAK_MANIFEST="flatpak/${APP_ID}.json"
+FLATPAK_CARGO_SOURCES="flatpak/cargo-sources.json"
+FLATPAK_REPO_URL="$(grep -m1 '^repository' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/').git"
+FLATPAK_CACHE="${XDG_CACHE_HOME:-${HOME}/.cache}/${APP_NAME}-flatpak"
+FLATPAK_CARGO_GENERATOR_URL="https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py"
+
 # Package version, read from Cargo.toml.
 get_version() { grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'; }
 
 # Write resources/app.metainfo.xml to $1 with its newest <release> entry set to
 # the version in Cargo.toml and today's date.
 #
-# Software centres compare that entry against what's installed to decide whether
+# Software centers compare that entry against what's installed to decide whether
 # a package is an upgrade, so a stale value makes a newer package look like the
 # installed one. Generating it keeps Cargo.toml the single source of truth
 # instead of relying on the file being hand-edited each release.
@@ -372,6 +381,96 @@ do_package_rpm() {
     success "Created .rpm in ${DIST_DIR}/"
 }
 
+# ── Flatpak ─────────────────────────────────────────────────────────────────
+# Runs inside flatpak-builder (the manifest's only build command). There is no
+# network in the sandbox, so crates come from cargo-sources.json via --offline.
+do_flatpak_install() {
+    local dest="${FLATPAK_DEST:?flatpak-install only runs inside flatpak-builder}"
+    CARGO_FEATURES="release-build"
+    CARGO_FLAGS="--locked --offline"
+    # Honor flatpak-builder's --jobs, which cargo doesn't read on its own.
+    if [ -n "${FLATPAK_BUILDER_N_JOBS:-}" ]; then
+        export CARGO_BUILD_JOBS="${FLATPAK_BUILDER_N_JOBS}"
+    fi
+    info "Release build — diagnostic logging forced OFF"
+    do_build
+
+    step "Installing into ${dest}..."
+    install -Dm0755 "${BIN_SRC}" "${dest}/bin/${APP_NAME}"
+    install -Dm0644 resources/app.desktop "${dest}/share/applications/${APP_ID}.desktop"
+    stage_metainfo "${CARGO_TARGET_DIR}/app.metainfo.xml"
+    install -Dm0644 "${CARGO_TARGET_DIR}/app.metainfo.xml" "${dest}/share/metainfo/${APP_ID}.metainfo.xml"
+    install -Dm0644 resources/icon.svg "${dest}/share/icons/hicolor/scalable/apps/${APP_ID}.svg"
+    install -Dm0644 LICENSE "${dest}/share/licenses/${APP_ID}/LICENSE"
+    success "Flatpak install complete"
+}
+
+# Regenerate cargo-sources.json from Cargo.lock and point the manifest's git
+# source at the tag for the version in Cargo.toml. Run before submitting a
+# release to the COSMIC Flatpak repository; the tag must already be pushed.
+do_flatpak_sources() {
+    for tool in jq curl python3; do
+        command -v "${tool}" &>/dev/null || { error "${tool} is required"; return 1; }
+    done
+    local venv="${FLATPAK_CACHE}/venv" generator="${FLATPAK_CACHE}/flatpak-cargo-generator.py"
+    mkdir -p "${FLATPAK_CACHE}"
+
+    step "Fetching flatpak-cargo-generator..."
+    curl -fsSL "${FLATPAK_CARGO_GENERATOR_URL}" -o "${generator}"
+    if [ ! -x "${venv}/bin/python" ]; then
+        python3 -m venv "${venv}"
+    fi
+    "${venv}/bin/pip" install --quiet --upgrade aiohttp tomlkit
+
+    step "Generating ${FLATPAK_CARGO_SOURCES} from Cargo.lock..."
+    "${venv}/bin/python" "${generator}" Cargo.lock -o "${FLATPAK_CARGO_SOURCES}"
+
+    local tag tmp
+    tag="v$(get_version)"
+    tmp="$(mktemp)"
+    jq --arg url "${FLATPAK_REPO_URL}" --arg tag "${tag}" \
+        '(.modules[] | select(.name == "'"${APP_NAME}"'") | .sources[0]) = {type: "git", url: $url, tag: $tag}' \
+        "${FLATPAK_MANIFEST}" > "${tmp}"
+    # Write through rather than mv, so the manifest keeps its own permissions
+    # instead of mktemp's 0600.
+    cat "${tmp}" > "${FLATPAK_MANIFEST}"
+    rm -f "${tmp}"
+    success "Manifest now builds tag ${tag}"
+}
+
+# Build the Flatpak from the working tree (not the tagged release), install it
+# for the current user, and write a single-file bundle to DIST_DIR. The builder
+# state lives under FLATPAK_CACHE so nothing lands in the project tree.
+do_package_flatpak() {
+    if ! flatpak info org.flatpak.Builder &>/dev/null; then
+        error "Flatpak Builder not found. Install it with: flatpak install flathub org.flatpak.Builder"
+        return 1
+    fi
+    local local_manifest="${FLATPAK_CACHE}/${APP_ID}.json" ver
+    ver="$(get_version)"
+    mkdir -p "${FLATPAK_CACHE}" "${DIST_DIR}"
+
+    # Same manifest, with the git source swapped for this directory.
+    jq --arg path "${PWD}" \
+        '(.modules[] | select(.name == "'"${APP_NAME}"'") | .sources) |=
+            [{type: "dir", path: $path, skip: ["target", "dist", ".git"]}] + (.[1:] | map(if type == "string" then "'"${PWD}"'/flatpak/" + . else . end))' \
+        "${FLATPAK_MANIFEST}" > "${local_manifest}"
+
+    step "Building Flatpak from the working tree..."
+    # FLATPAK_JOBS caps build parallelism (flatpak-builder defaults to every core).
+    # shellcheck disable=SC2086
+    flatpak run --filesystem="${PWD}" --filesystem="${FLATPAK_CACHE}" org.flatpak.Builder \
+        --user --install --force-clean ${FLATPAK_JOBS:+--jobs=${FLATPAK_JOBS}} \
+        --state-dir="${FLATPAK_CACHE}/state" \
+        --repo="${FLATPAK_CACHE}/repo" \
+        "${FLATPAK_CACHE}/build" "${local_manifest}"
+
+    step "Exporting bundle..."
+    flatpak build-bundle "${FLATPAK_CACHE}/repo" \
+        "${DIST_DIR}/${APP_NAME}-${ver}.flatpak" "${APP_ID}"
+    success "Installed for this user; bundle at ${DIST_DIR}/${APP_NAME}-${ver}.flatpak"
+}
+
 # Build every available package format into DIST_DIR (skips deb/rpm when their
 # tooling isn't installed).
 do_package() {
@@ -421,11 +520,18 @@ usage() {
     echo -e "    ${GREEN}package-deb${RESET}     Build a .deb (needs: cargo install cargo-deb)"
     echo -e "    ${GREEN}package-rpm${RESET}     Build a .rpm (needs: cargo install cargo-generate-rpm)"
     echo ""
+    echo -e "  ${BOLD}Flatpak (COSMIC Store):${RESET}"
+    echo -e "    ${GREEN}package-flatpak${RESET} Build the working tree as a Flatpak, install it for this"
+    echo -e "                    user, and write a .flatpak bundle (needs: org.flatpak.Builder)"
+    echo -e "    ${GREEN}flatpak-sources${RESET} Regenerate flatpak/cargo-sources.json and point the"
+    echo -e "                    manifest at the tag for the Cargo.toml version"
+    echo ""
     echo -e "  ${BOLD}Environment variables:${RESET}"
     echo -e "    ${YELLOW}PREFIX${RESET}          Installation prefix (default: /usr)"
     echo -e "    ${YELLOW}CARGO_TARGET_DIR${RESET}  Cargo target directory (default: target)"
     echo -e "    ${YELLOW}DIST_DIR${RESET}        Package output directory (default: dist)"
     echo -e "    ${YELLOW}BIN_SRC${RESET}         Binary to install (e.g. when installing from a tarball)"
+    echo -e "    ${YELLOW}FLATPAK_JOBS${RESET}    Parallel jobs for package-flatpak (default: all cores)"
     echo ""
     echo -e "  ${BOLD}Examples:${RESET}"
     echo -e "    $0 build-install        # Build and install"
@@ -463,6 +569,9 @@ main() {
         package-tar)    do_package_tar ;;
         package-deb)    do_package_deb ;;
         package-rpm)    do_package_rpm ;;
+        package-flatpak) do_package_flatpak ;;
+        flatpak-sources) do_flatpak_sources ;;
+        flatpak-install) do_flatpak_install ;;
         release)        do_package ;;
         help|--help|-h) usage ;;
         *)

@@ -1,0 +1,41 @@
+{
+  "id": "com.github.cosmic_media_now_playing_applet",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "25.08",
+  "sdk": "org.freedesktop.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "cosmic-media-now-playing-applet",
+  "finish-args": [
+    "--socket=wayland",
+    "--share=network",
+    "--talk-name=org.mpris.MediaPlayer2.*",
+    "--filesystem=xdg-config/cosmic:rw",
+    "--filesystem=xdg-cache:ro",
+    "--filesystem=~/.var/app:ro"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/cosmic-media-now-playing-applet/cargo"
+    }
+  },
+  "modules": [
+    {
+      "name": "cosmic-media-now-playing-applet",
+      "buildsystem": "simple",
+      "build-commands": [
+        "./install.sh flatpak-install"
+      ],
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/stldave314/cosmic-media-now-playing-applet.git",
+          "tag": "v0.13.0"
+        },
+        "cargo-sources.json"
+      ]
+    }
+  ]
+}
