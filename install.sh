@@ -251,7 +251,12 @@ do_reload_panel() {
     mapfile -t envvars < <(tr '\0' '\n' < "/proc/${src}/environ" 2>/dev/null | grep -E \
         '^(WAYLAND_DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_DATA_DIRS|XDG_CONFIG_DIRS|HOME|USER|PATH|DISPLAY)=' || true)
 
-    setsid env "${envvars[@]}" nohup cosmic-panel >/dev/null 2>&1 &
+    # X_PRIVILEGED_WAYLAND_SOCKET (and WAYLAND_SOCKET) name a file descriptor
+    # that cosmic-session hands its own children. A terminal inherits the
+    # variable but not the descriptor, so passing it on makes the panel try to
+    # talk Wayland over some unrelated file and exit ("Bad file descriptor").
+    setsid env -u X_PRIVILEGED_WAYLAND_SOCKET -u WAYLAND_SOCKET "${envvars[@]}" \
+        nohup cosmic-panel >/dev/null 2>&1 &
     sleep 3
 
     if pgrep -x cosmic-panel &>/dev/null; then
