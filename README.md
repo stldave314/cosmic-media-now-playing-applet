@@ -86,6 +86,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | 🎵 **Inline panel display** | Album art (or music-note icon) plus the track name, right on the panel bar |
 | 🖼️ **Panel album art** | The panel icon can be the live album-art thumbnail, a music note, or nothing |
 | 🎚️ **Hover controls** | Hover the panel for inline previous / play-pause / next / stop; the icon/art still opens the popup |
+| 🖱️ **Scroll & middle-click** | Scroll over the applet to change the player's volume (with a brief *Volume 45%* on the panel) or to skip tracks; middle-click to play or pause |
 | ⏹️ **Stop button** | Pauses and clears the applet — title *and* art — so a finished session stops occupying the panel. Returns on its own when you play again or change track |
 | ⏲️ **Optional idle timer** | Can do the same thing automatically after playback has been paused for a configurable number of minutes (off by default) |
 | 🧭 **Capability-aware buttons** | Previous/next are hidden automatically when the player doesn't support them (MPRIS `CanGoNext`/`CanGoPrevious`) |
@@ -265,7 +266,7 @@ The COSMIC Store lists applets from the [COSMIC Flatpak repository](https://gith
 
 **Try it without installing:** `cargo run --release`. (It's designed for the COSMIC panel; standalone it opens a test window, and popup positioning/panel sizing behave differently than in production.)
 
-When media is playing you'll see the album art/icon and the (scrolling) title on the panel. **Hover** for inline controls; **click anywhere** to open the popup. When nothing is playing, the applet is invisible.
+When media is playing you'll see the album art/icon and the (scrolling) title on the panel. **Hover** for inline controls; **click anywhere** to open the popup. **Scroll** over it to change the player's volume (or skip tracks, if you prefer), and **middle-click** to play or pause. When nothing is playing, the applet is invisible.
 
 ---
 
@@ -307,6 +308,8 @@ Below the playback controls is a switch that arms a **one-shot stop**: the curre
 | **Album Art Size** | 12 – 48 px | 16 px | Size of the panel thumbnail (and music-note fallback) |
 | **Icon Spacing** | 0 – 40 px | 6 px | Gap between icon/art and title; hidden when Panel Icon is "No Icon" |
 | **Show Controls on Hover** | On / Off | On | Requires a Panel Icon other than "No Icon"; prev/next appear only when supported and there's room |
+| **Scroll Wheel** | Change Volume · Skip Tracks · Off | Change Volume | Wheel up raises the player's own volume by 5% per notch and shows the new level on the panel briefly; in Skip Tracks, wheel down goes to the next track and up to the previous one, one track per flick. Works only with players that report a volume and accept control |
+| **Middle-Click to Play/Pause** | On / Off | On | |
 | **Clear Title When Idle** | Off, 1 – 60 min | **Off** | Stops the applet once playback has been idle this long — same result as pressing STOP: title and art clear, and the panel space is given back. Playing again or changing track brings it back |
 
 ### Config File Location
@@ -392,7 +395,7 @@ Stored via `cosmic-config` at:
 - **Track identity** — "has the track changed?" is keyed on a composite of `mpris:trackid` + `xesam:url` + title + artist, because some players (notably browsers) reuse a single track id for a whole session. MPRIS delivers Metadata as one dict, so these fields change together and can't disagree mid-update.
 - **Constants vs. settings** — values a user should control live in `config.rs` (persisted via `cosmic-config`, with UI and validation); internal tuning values live in `constants.rs` as compile-time constants. Package metadata such as the update URL and user agent is derived from `Cargo.toml` via `env!("CARGO_PKG_*")` so it has a single source of truth.
 - **Diagnostic logging** — `debug.rs` writes categorized diagnostics to a file rather than stderr, since an applet's stderr is piped to `cosmic-panel` and ends up on the session TTY. It's gated on a compile-time constant, so when disabled the `debug_log!` macro's body is dead code and the optimizer removes it entirely — no formatting, no I/O, and the log path doesn't even appear in the binary. Set `DEVELOPER_LOGGING` in `debug.rs` to enable it while debugging; the packaging targets build with the `release-build` feature, which forces it off so a release can never ship with logging on.
-- **Hover detection** — because the applet surface is autosized to exactly the widget, the pointer leaves the *surface* rather than crossing widget bounds, which a `mouse_area`'s hover state doesn't track reliably. Hover is instead detected via a raw `CursorMoved` / `CursorLeft` subscription filtered to the applet's own surface. The whole widget is one button (so any click opens the popup) while nested control buttons capture their own clicks.
+- **Hover, wheel, and middle-click detection** — because the applet surface is autosized to exactly the widget, the pointer leaves the *surface* rather than crossing widget bounds, which a `mouse_area`'s hover state doesn't track reliably, and its wheel handler reports every notch twice. All three are instead read from a raw pointer-event subscription (`CursorMoved` / `CursorLeft`, `WheelScrolled`, middle `ButtonPressed`) filtered to the applet's own surface. The whole widget is one button (so any click opens the popup) while nested control buttons capture their own clicks.
 - **Auto-switching** — detects a player transitioning from paused to playing and switches focus to it.
 - **Debounced panel resizing** — width changes commit only after 1.5 s of inactivity, sending a single clean resize request instead of many rapid ones that could overlap applets.
 - **Marquee scrolling** — character-offset windowing over a looping buffer; the scroll subscription is disabled entirely when the text fits or scrolling is Off.

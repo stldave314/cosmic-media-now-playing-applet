@@ -206,7 +206,7 @@ impl PartialEq for TrackMetadata {
 impl Eq for TrackMetadata {}
 
 /// Commands that can be sent to the MPRIS player.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MprisCommand {
     PlayPause,
     Pause,
@@ -215,6 +215,8 @@ pub enum MprisCommand {
     /// Seek to an absolute position (microseconds) using MPRIS SetPosition.
     /// Requires the track's MPRIS object-path ID and the target position.
     SetPosition { track_id: String, position_us: i64 },
+    /// Set the player's own volume, 0.0 (silent) to 1.0 (full).
+    SetVolume(f64),
 }
 
 /// The upcoming queued track, if the player implements the optional
@@ -225,7 +227,7 @@ pub struct QueuedTrack {
     pub artist: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlayerInfo {
     pub bus_name: String,
     pub identity: String,
@@ -240,6 +242,11 @@ pub struct PlayerInfo {
     /// The next track in the queue — only available for players implementing the
     /// optional TrackList interface (e.g. VLC); `None` for most players.
     pub next_track: Option<QueuedTrack>,
+    /// The player's own volume, 0.0 to 1.0, when it reports one.
+    pub volume: Option<f64>,
+    /// Whether the player accepts control at all (MPRIS `CanControl`). When it
+    /// doesn't, property writes such as volume are refused.
+    pub can_control: bool,
 }
 
 /// Pull the four identity fields (track id, url, title, artist) out of an MPRIS
@@ -671,6 +678,8 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
         // when the property is missing, since the spec marks these as required.
         let can_go_next = prop::<bool>(&props, "CanGoNext").unwrap_or(true);
         let can_go_previous = prop::<bool>(&props, "CanGoPrevious").unwrap_or(true);
+        let volume = prop::<f64>(&props, "Volume").filter(|v| v.is_finite());
+        let can_control = prop::<bool>(&props, "CanControl").unwrap_or(true);
 
         // One line per player, emitted only when its state actually changes —
         // logging every refresh would bury everything else. Position is
@@ -713,6 +722,8 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             can_go_next,
             can_go_previous,
             next_track,
+            volume,
+            can_control,
         });
     }
 
@@ -808,6 +819,9 @@ pub async fn send_command(bus_name: String, command: MprisCommand) {
             if let Ok(obj_path) = zbus::zvariant::ObjectPath::try_from(track_id.as_str()) {
                 let _ = player_proxy.call_method("SetPosition", &(obj_path, position_us)).await;
             }
+        }
+        MprisCommand::SetVolume(volume) => {
+            let _ = player_proxy.set_property("Volume", volume.clamp(0.0, 1.0)).await;
         }
     }
 }

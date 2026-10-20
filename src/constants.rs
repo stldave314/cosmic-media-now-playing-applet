@@ -36,6 +36,22 @@ pub const MUSIC_NOTE_SIZE: f32 = 16.0;
 /// its spacing. Used to decide whether all three controls fit.
 pub const CONTROL_BUTTON_WIDTH: f32 = 34.0;
 
+/// How much one notch of the mouse wheel changes the player's volume, as a
+/// fraction of full scale.
+pub const VOLUME_STEP: f64 = 0.05;
+
+/// Pixels of smooth (touchpad) scrolling that count as one wheel notch.
+pub const SCROLL_PIXELS_PER_STEP: f32 = 24.0;
+
+/// Shortest gap between two track skips made with the wheel. A flick of a
+/// free-spinning wheel or a touchpad swipe sends many notches at once; without
+/// this it would skip several tracks.
+pub const SCROLL_SKIP_COOLDOWN_MS: u64 = 400;
+
+/// How long a short notice (such as the new volume) replaces the title on the
+/// panel.
+pub const PANEL_NOTICE_MS: u64 = 1_200;
+
 // ── Media popup ─────────────────────────────────────────────────────────────
 
 /// Width of the media popup. libcosmic fixes every applet popup at this width

@@ -38,6 +38,18 @@ pub enum PanelIcon {
     None,
 }
 
+/// What the mouse wheel does over the panel applet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ScrollAction {
+    /// Raise (wheel up) or lower (wheel down) the player's own volume.
+    #[default]
+    Volume,
+    /// Go to the next track (wheel down) or the previous one (wheel up).
+    SkipTrack,
+    /// Leave the wheel alone.
+    Nothing,
+}
+
 /// Persistent configuration for the Now Playing applet.
 ///
 /// Stored and loaded automatically via `cosmic-config`.
@@ -74,6 +86,10 @@ pub struct NowPlayingConfig {
     /// disables it, which is the default: the applet keeps showing the last
     /// track until the user stops it explicitly.
     pub idle_clear_minutes: u32,
+    /// What scrolling over the panel applet does.
+    pub scroll_action: ScrollAction,
+    /// Middle-clicking the panel applet toggles play/pause.
+    pub middle_click_play_pause: bool,
 }
 
 impl NowPlayingConfig {
@@ -115,6 +131,8 @@ impl Default for NowPlayingConfig {
             // Off by default: stopping hides the applet, and that shouldn't
             // happen to anyone who didn't ask for it.
             idle_clear_minutes: 0,
+            scroll_action: ScrollAction::default(),
+            middle_click_play_pause: true,
         }
     }
 }

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
+use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon, ScrollAction};
 use crate::constants::{
     APPROX_CHAR_WIDTH, BACKDROP_CORNER_MARGIN, BACKDROP_SCRIM, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS,
     MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_IDLE_POLL_INTERVAL_MS,
     MPRIS_POLL_INTERVAL_MS,
-    MUSIC_NOTE_SIZE, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
+    MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
+    SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, VOLUME_STEP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
@@ -129,6 +130,23 @@ pub struct NowPlaying {
     stopped_at_key: Option<String>,
     /// Status message for the version update check.
     update_status: Option<String>,
+    /// The active player's volume (0.0–1.0), when it reports one. Updated
+    /// optimistically on scroll so rapid notches build on each other.
+    volume: Option<f64>,
+    /// Whether the active player accepts control (MPRIS `CanControl`).
+    can_control: bool,
+    /// Wheel movement not yet turned into whole steps. Touchpads and
+    /// high-resolution wheels report fractions of a notch.
+    scroll_steps: f32,
+    /// When the wheel last skipped a track, to stop a fast flick skipping
+    /// several.
+    last_scroll_skip: Option<std::time::Instant>,
+    /// A short message shown on the panel in place of the title, such as the
+    /// new volume after a scroll. Cleared after [`PANEL_NOTICE_MS`].
+    panel_notice: Option<String>,
+    /// Generation counter for `panel_notice`, so an older timer can't clear a
+    /// newer notice.
+    panel_notice_gen: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,6 +207,12 @@ impl Default for NowPlaying {
             not_playing_since: None,
             stopped_at_key: None,
             update_status: None,
+            volume: None,
+            can_control: true,
+            scroll_steps: 0.0,
+            last_scroll_skip: None,
+            panel_notice: None,
+            panel_notice_gen: 0,
         }
     }
 }
@@ -244,6 +268,29 @@ fn labeled_control<'a>(
         .push(widget::space::horizontal().width(Length::Fill))
         .push(control)
         .into()
+}
+
+/// A settings switch with its label beside it. The label and padding are part
+/// of the click target too. It reacts on *release*: the toggler publishes on
+/// ButtonReleased and captures it, so clicking the switch itself is handled
+/// once rather than toggling twice. `None` shows it disabled.
+fn labeled_toggle<'a>(
+    label: String,
+    on: bool,
+    on_toggle: Option<fn(bool) -> Message>,
+) -> Element<'a, Message> {
+    let row = widget::row::with_capacity(2)
+        .spacing(12)
+        .align_y(Vertical::Center)
+        .push(widget::toggler(on).on_toggle_maybe(on_toggle))
+        .push(widget::text::body(label));
+    match on_toggle {
+        Some(toggle) => widget::mouse_area(row)
+            .on_release(toggle(!on))
+            .interaction(cosmic::iced::mouse::Interaction::Pointer)
+            .into(),
+        None => row.into(),
+    }
 }
 
 /// Colors for the media popup. They depend on whether it is drawn over the
@@ -477,6 +524,7 @@ impl NowPlaying {
         self.config.show_hover_controls
             && self.config.panel_icon != PanelIcon::None
             && self.panel_hovered
+            && self.panel_notice.is_none()
     }
 
     /// Whether the applet is stopped — see [`NowPlaying::stopped_at_key`].
@@ -488,6 +536,9 @@ impl NowPlaying {
     fn visible_text(&self) -> String {
         if self.is_stopped() {
             return String::new();
+        }
+        if let Some(notice) = &self.panel_notice {
+            return notice.clone();
         }
 
         let max_chars = self.max_visible_chars();
@@ -533,6 +584,71 @@ impl NowPlaying {
                     eprintln!("error saving config: {why}");
                     crate::debug_log!(crate::debug::CONFIG, "save FAILED: {why}");
                 }
+            }
+        }
+    }
+
+    /// Show `text` on the panel in place of the title for [`PANEL_NOTICE_MS`].
+    fn show_panel_notice(&mut self, text: String) -> Task<cosmic::Action<Message>> {
+        self.panel_notice = Some(text);
+        self.panel_notice_gen += 1;
+        let gen = self.panel_notice_gen;
+        Task::perform(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(PANEL_NOTICE_MS)).await;
+                gen
+            },
+            |gen| cosmic::Action::App(Message::PanelNoticeExpired(gen)),
+        )
+    }
+
+    /// Act on `steps` whole wheel notches (positive = wheel up).
+    fn apply_scroll(&mut self, steps: i32) -> Task<cosmic::Action<Message>> {
+        let Some(bus) = self.active_player_bus.clone() else {
+            return Task::none();
+        };
+        match self.config.scroll_action {
+            ScrollAction::Nothing => Task::none(),
+            ScrollAction::Volume => {
+                let Some(current) = self.volume.filter(|_| self.can_control) else {
+                    return Task::none();
+                };
+                // Snap to the step grid first, so 62% goes to 65%, not 67%.
+                let target =
+                    (((current / VOLUME_STEP).round() + f64::from(steps)) * VOLUME_STEP).clamp(0.0, 1.0);
+                self.volume = Some(target);
+                let percent = (target * 100.0).round() as i64;
+                crate::debug_log!(crate::debug::UI, "scroll {steps:+} → volume {percent}%");
+                Task::batch([
+                    Task::perform(
+                        mpris::send_command(bus, mpris::MprisCommand::SetVolume(target)),
+                        |_| cosmic::Action::App(Message::Ignore),
+                    ),
+                    self.show_panel_notice(fl!("volume-notice", percent = percent)),
+                ])
+            }
+            ScrollAction::SkipTrack => {
+                let now = std::time::Instant::now();
+                let cooldown = std::time::Duration::from_millis(SCROLL_SKIP_COOLDOWN_MS);
+                if self.last_scroll_skip.is_some_and(|at| now.duration_since(at) < cooldown) {
+                    return Task::none();
+                }
+                // Wheel down moves forward through the queue, as down moves
+                // through a list.
+                let command = if steps < 0 {
+                    self.can_go_next.then_some(mpris::MprisCommand::Next)
+                } else {
+                    self.can_go_previous.then_some(mpris::MprisCommand::Previous)
+                };
+                let Some(command) = command else {
+                    return Task::none();
+                };
+                crate::debug_log!(crate::debug::UI, "scroll {steps:+} → {command:?}");
+                self.last_scroll_skip = Some(now);
+                self.not_playing_since = None;
+                Task::perform(mpris::send_command(bus, command), |_| {
+                    cosmic::Action::App(Message::Ignore)
+                })
             }
         }
     }
@@ -1059,29 +1175,35 @@ impl NowPlaying {
 
         // Hover controls only make sense with a leading icon to anchor the
         // popup click, so the toggle is disabled when "No Icon" is selected.
-        // Switch first, then a small margin, then the label.
-        let hover_enabled = self.config.panel_icon != PanelIcon::None;
-        let hover_on = self.config.show_hover_controls;
-        let hover_row = widget::row::with_capacity(2)
-            .spacing(12)
-            .align_y(Vertical::Center)
-            .push(
-                widget::toggler(hover_on)
-                    .on_toggle_maybe(hover_enabled.then_some(Message::SetHoverControls)),
-            )
-            .push(widget::text::body(fl!("hover-controls")));
+        let hover_toggle = labeled_toggle(
+            fl!("hover-controls"),
+            self.config.show_hover_controls,
+            (self.config.panel_icon != PanelIcon::None)
+                .then_some(Message::SetHoverControls as fn(bool) -> Message),
+        );
 
-        // The label is part of the click target too. This reacts on *release*:
-        // the toggler publishes on ButtonReleased and captures it, so clicking
-        // the switch itself is handled once rather than toggling twice.
-        let hover_toggle: Element<'_, Message> = if hover_enabled {
-            widget::mouse_area(hover_row)
-                .on_release(Message::SetHoverControls(!hover_on))
-                .interaction(cosmic::iced::mouse::Interaction::Pointer)
-                .into()
-        } else {
-            hover_row.into()
-        };
+        let scroll_options: Vec<String> = vec![
+            fl!("scroll-wheel-volume"),
+            fl!("scroll-wheel-skip"),
+            fl!("scroll-off"),
+        ];
+        let scroll_selected = Some(match self.config.scroll_action {
+            ScrollAction::Volume => 0,
+            ScrollAction::SkipTrack => 1,
+            ScrollAction::Nothing => 2,
+        });
+        let scroll_dropdown = widget::dropdown(scroll_options, scroll_selected, |i| {
+            Message::SetScrollAction(match i {
+                0 => ScrollAction::Volume,
+                1 => ScrollAction::SkipTrack,
+                _ => ScrollAction::Nothing,
+            })
+        });
+        let middle_click_toggle = labeled_toggle(
+            fl!("middle-click"),
+            self.config.middle_click_play_pause,
+            Some(Message::SetMiddleClick),
+        );
 
         // Groups keep each label tight against its own slider (2px), while the
         // outer spacing separates the settings from each other — this keeps the
@@ -1106,7 +1228,9 @@ impl NowPlaying {
             .push(labeled_slider(art_size_label, art_size_slider))
             .push_maybe(icon_spacing_section)
             .push(idle_clear_section)
-            .push(hover_toggle);
+            .push(hover_toggle)
+            .push(labeled_control(fl!("scroll-wheel"), scroll_dropdown))
+            .push(middle_click_toggle);
 
         // Version and the update button share one line; the result only takes up
         // space once there is something to report.
@@ -1124,7 +1248,11 @@ impl NowPlaying {
             .push(update_row)
             .push_maybe(status_label);
 
-        self.core.applet.popup_container(content).into()
+        // Scrolls once the settings outgrow the popup's height limit.
+        self.core
+            .applet
+            .popup_container(widget::scrollable(content).height(Length::Shrink))
+            .into()
     }
 }
 
@@ -1206,6 +1334,16 @@ pub enum Message {
     CheckUpdate,
     /// Update check completed.
     UpdateCheckComplete(String),
+    /// The mouse wheel moved over a surface (carries the surface's window id).
+    PanelScrolled(Id, cosmic::iced::mouse::ScrollDelta),
+    /// The middle button was pressed over a surface (carries its window id).
+    PanelMiddleClicked(Id),
+    /// A panel notice's display time is up (carries its generation).
+    PanelNoticeExpired(u64),
+    /// User changed what the mouse wheel does over the panel.
+    SetScrollAction(ScrollAction),
+    /// User toggled middle-click play/pause.
+    SetMiddleClick(bool),
 }
 
 /// Helper: creates the MPRIS refresh stream. It re-reads the players whenever
@@ -1555,21 +1693,32 @@ impl cosmic::Application for NowPlaying {
             subs.push(Subscription::run_with(2u8, progress_timer_stream));
         }
 
-        // 4. Hover detection for the panel controls. The applet surface is
-        // autosized to exactly the widget, so the pointer enters/leaves the
+        // 4. Pointer input on the panel surface: hover (for the panel
+        // controls), the mouse wheel, and the middle button. The applet surface
+        // is autosized to exactly the widget, so the pointer enters/leaves the
         // *surface* rather than crossing widget bounds — `mouse_area`'s own
         // on_enter/on_exit are unreliable here (its internal hover state sticks
-        // after the first CursorLeft). Drive hover from raw events instead: on
-        // Wayland, surface-enter arrives as CursorMoved and surface-leave as
-        // CursorLeft. The window id lets us ignore moves over the popup.
-        if self.config.show_hover_controls && self.config.panel_icon != PanelIcon::None {
+        // after the first CursorLeft), and its wheel handler publishes every
+        // event twice. Raw events see each one exactly once: on Wayland,
+        // surface-enter arrives as CursorMoved and surface-leave as CursorLeft.
+        // The window id lets `update` ignore anything over the popup.
+        let wants_hover = self.config.show_hover_controls && self.config.panel_icon != PanelIcon::None;
+        let wants_wheel = self.config.scroll_action != ScrollAction::Nothing;
+        if wants_hover || wants_wheel || self.config.middle_click_play_pause {
             subs.push(cosmic::iced::event::listen_with(|event, _status, window| {
+                use cosmic::iced::mouse::{Button, Event as Mouse};
                 match event {
-                    cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::CursorMoved { .. }) => {
+                    cosmic::iced::Event::Mouse(Mouse::CursorMoved { .. }) => {
                         Some(Message::PanelPointerMoved(window))
                     }
-                    cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::CursorLeft) => {
+                    cosmic::iced::Event::Mouse(Mouse::CursorLeft) => {
                         Some(Message::PanelPointerLeft(window))
+                    }
+                    cosmic::iced::Event::Mouse(Mouse::WheelScrolled { delta }) => {
+                        Some(Message::PanelScrolled(window, delta))
+                    }
+                    cosmic::iced::Event::Mouse(Mouse::ButtonPressed(Button::Middle)) => {
+                        Some(Message::PanelMiddleClicked(window))
                     }
                     _ => None,
                 }
@@ -1672,6 +1821,8 @@ impl cosmic::Application for NowPlaying {
 
                 self.last_playing_buses = currently_playing;
                 self.players = players;
+                self.volume = active_player.as_ref().and_then(|p| p.volume);
+                self.can_control = active_player.as_ref().is_none_or(|p| p.can_control);
 
                 let (title, artist, art_url, art_bytes, status, has_player, active_bus,
                      new_length_us, new_track_id, new_position_us, new_track_url,
@@ -1870,6 +2021,8 @@ impl cosmic::Application for NowPlaying {
                     self.playback_status = p.playback_status.clone();
                     self.can_go_next = p.can_go_next;
                     self.can_go_previous = p.can_go_previous;
+                    self.volume = p.volume;
+                    self.can_control = p.can_control;
                     
                     if changed || !self.has_player {
                         self.track_title = p.metadata.title;
@@ -2152,6 +2305,45 @@ impl cosmic::Application for NowPlaying {
             Message::UpdateCheckComplete(status) => {
                 crate::debug_log!(crate::debug::UPDATE, "result: {status}");
                 self.update_status = Some(status);
+            }
+            Message::PanelScrolled(window, delta) => {
+                use cosmic::iced::mouse::ScrollDelta;
+                if Some(window) != self.core.main_window_id()
+                    || self.config.scroll_action == ScrollAction::Nothing
+                {
+                    return Task::none();
+                }
+                self.scroll_steps += match delta {
+                    ScrollDelta::Lines { y, .. } => y,
+                    ScrollDelta::Pixels { y, .. } => y / SCROLL_PIXELS_PER_STEP,
+                };
+                let steps = self.scroll_steps.trunc();
+                if steps.abs() < 1.0 {
+                    return Task::none();
+                }
+                self.scroll_steps -= steps;
+                return self.apply_scroll(steps as i32);
+            }
+            Message::PanelMiddleClicked(window) => {
+                if Some(window) != self.core.main_window_id() || !self.config.middle_click_play_pause {
+                    return Task::none();
+                }
+                crate::debug_log!(crate::debug::UI, "middle click → play/pause");
+                return self.update(Message::PlayerCommand(mpris::MprisCommand::PlayPause));
+            }
+            Message::PanelNoticeExpired(gen) => {
+                if gen == self.panel_notice_gen {
+                    self.panel_notice = None;
+                }
+            }
+            Message::SetScrollAction(action) => {
+                self.config.scroll_action = action;
+                self.scroll_steps = 0.0;
+                self.save_config();
+            }
+            Message::SetMiddleClick(enabled) => {
+                self.config.middle_click_play_pause = enabled;
+                self.save_config();
             }
         }
         Task::none()
