@@ -53,28 +53,35 @@ It's **pure Rust** — no C D-Bus bindings — and every setting persists across
 
 ## Screenshots
 
-> **Note:** the album art in these screenshots is placeholder artwork, not a real album cover, to avoid redistributing copyrighted images; the track and artist in the popup screenshot are made up to match. The applet displays whatever artwork your player provides. Surrounding panel applets and windows are blurred for privacy.
+> **Note:** the album art in these screenshots is placeholder artwork, not a real album cover, to avoid redistributing copyrighted images; the tracks, artists, albums, and podcast are made up to match. The applet displays whatever artwork your player provides. Surrounding panel applets and windows are blurred for privacy.
 
-On the panel, the applet sits inline with your other applets — album art thumbnail plus the track title, which **scrolls as a marquee** when it's too long to fit:
+On the panel, the applet sits inline with your other applets — album art thumbnail plus the track title, which **glides smoothly as a marquee** when it's too long to fit. The optional thin line beneath it shows how far through the track you are:
 
 <p align="center">
-  <img src="resources/screenshot-panel.png" alt="The applet on the COSMIC panel showing the album art thumbnail (placeholder graphic) and a long track title scrolling as a marquee" width="820">
+  <img src="resources/screenshot-panel.png" alt="The applet on the COSMIC panel: the album art thumbnail (placeholder graphic), the track title, and a thin progress line underneath" width="820">
 </p>
 
-The hero image above shows the same widget alongside its **media popup** — album art, title and artist, the seekable progress bar with elapsed and total time, playback controls, the next queued track, and the *pause before playing next track* switch.
+The hero image above shows the same widget alongside its **media popup** — album art, title, artist, and album, the seekable progress bar with elapsed and total time, shuffle and repeat around the playback controls, the next queued track, the *pause before playing next track* switch, and the sleep timer. Click the title to bring the player's own window forward.
 
 The popup takes its colors from the cover: a blurred copy of the art fills the background, under a dark gradient that keeps the white text and controls readable on any image, from a pure-white sleeve to a busy, high-contrast one. Over art the popup is always light-on-dark, even with a light system theme, and it's outlined in the same color and thickness as COSMIC's active-window hint. With no art it falls back to the normal COSMIC popup surface and your theme's colors.
 
-Hover over the applet on the panel for **inline controls** (previous / play-pause / next / stop) without opening the popup:
+On long tracks — podcasts, audiobooks, lectures — the popup adds **podcast controls**: back 15 seconds, the playback speed, and forward 30 seconds. Here the speed is 1.25× and a 30-minute **sleep timer** is counting down:
 
 <p align="center">
-  <img src="resources/screenshot-hover.png" alt="The applet on the COSMIC panel with its hover controls: the album art thumbnail, then previous, pause, next, and stop" width="820">
+  <img src="resources/screenshot-podcast.png" alt="The media popup on a 48-minute podcast episode: back 15 s, 1.25×, and forward 30 s chips under the playback controls, and the sleep timer outlined with 30 minutes remaining" width="420">
 </p>
 
-The **settings view**, reached via the gear icon, keeps every option on one compact, scrolling screen:
+Hover over the applet on the panel for **inline controls** (previous / play-pause / next / stop) without opening the popup, and a **tooltip** with the full title, artist, and album — **scroll** there to change the player's volume, or **middle-click** to play or pause:
 
 <p align="center">
-  <img src="resources/screenshot-settings.png" alt="Settings view: widget width, top/left/right margins, scroll speed, display format, panel icon, album art size, icon spacing, clear title when idle, hover controls toggle, and the version and update-check row" width="420">
+  <img src="resources/screenshot-tooltip.png" alt="The applet on the COSMIC panel with its hover controls (previous, pause, next, stop) and a tooltip below listing the title, artist, and album" width="820">
+</p>
+
+The **settings view**, reached via the gear icon, keeps every option on one compact, scrolling screen, ending with the players the applet follows:
+
+<p align="center">
+  <img src="resources/screenshot-settings.png" alt="Settings view, top: widget width, top/left/right margins, scroll speed, display format, panel icon, album art size, icon spacing, and clear title when idle" width="380">
+  <img src="resources/screenshot-settings-more.png" alt="Settings view, scrolled down: hover controls, progress on panel, scroll wheel, middle-click, the Players section with follow-the-player and a switch per player, and the version and update-check row" width="380">
 </p>
 
 ---

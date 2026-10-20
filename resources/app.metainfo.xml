@@ -14,9 +14,11 @@
   <description>
     <p>
       Shows the currently playing media track on your COSMIC desktop panel using MPRIS.
-      Displays album art and the track title, with inline playback controls on hover and
-      a popup offering a seekable progress bar, playback controls, a player selector, and
-      a one-shot "pause before playing next track" switch.
+      Displays album art and a smoothly scrolling title, with inline playback controls and
+      the full track details on hover, the player's volume on the scroll wheel, and
+      play/pause on middle-click. The popup offers a seekable progress bar, shuffle and
+      repeat, podcast controls with playback speed, a sleep timer, a player selector, and a
+      one-shot "pause before playing next track" switch.
     </p>
     <p>
       Works with any MPRIS-compatible player, including Spotify, web players in Firefox
@@ -50,20 +52,24 @@
        copies rather than the files in resources/. -->
   <screenshots>
     <screenshot type="default">
-      <caption>The popup with album art, a seekable progress bar, and playback controls</caption>
+      <caption>The popup with album art, shuffle and repeat, a seekable progress bar, and a sleep timer</caption>
       <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-popup.png</image>
     </screenshot>
     <screenshot>
-      <caption>The current track scrolling on the panel</caption>
+      <caption>Podcast controls and a running sleep timer on a long episode</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-podcast.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The current track on the panel, with the optional progress line</caption>
       <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-panel.png</image>
     </screenshot>
     <screenshot>
-      <caption>Playback controls on the panel, shown on hover</caption>
-      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-hover.png</image>
+      <caption>Playback controls and the full track details on hover</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-tooltip.png</image>
     </screenshot>
     <screenshot>
-      <caption>Panel display settings</caption>
-      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-settings.png</image>
+      <caption>Settings for the scroll wheel, middle-click, and which players to follow</caption>
+      <image>https://raw.githubusercontent.com/stldave314/cosmic-media-now-playing-applet/main/resources/screenshot-settings-more.png</image>
     </screenshot>
   </screenshots>
 
