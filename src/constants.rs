@@ -58,6 +58,10 @@ pub const SCROLL_SKIP_COOLDOWN_MS: u64 = 400;
 /// panel.
 pub const PANEL_NOTICE_MS: u64 = 1_200;
 
+/// How long the pointer must rest on a popup button before its tooltip
+/// appears, so tooltips don't flicker past while moving across the controls.
+pub const TOOLTIP_DELAY_MS: u64 = 500;
+
 // ── Media popup ─────────────────────────────────────────────────────────────
 
 /// Width of the media popup. libcosmic fixes every applet popup at this width

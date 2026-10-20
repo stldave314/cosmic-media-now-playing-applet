@@ -9,7 +9,7 @@ use crate::constants::{
     MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, PANEL_PROGRESS_HEIGHT, PANEL_PROGRESS_INSET,
     PANEL_PROGRESS_TICK_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
     SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, SETTINGS_MAX_HEIGHT, SLEEP_TIMER_OPTIONS,
-    SLEEP_TIMER_REDRAW_SECS, VOLUME_STEP,
+    SLEEP_TIMER_REDRAW_SECS, TOOLTIP_DELAY_MS, VOLUME_STEP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, MARQUEE_MAX_FRAME_MS,
     MARQUEE_MIN_FRAME_MS, MARQUEE_STEP_PX,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
@@ -435,6 +435,15 @@ fn tinted_icon(name: &'static str, size: u16, color: Color) -> widget::Icon {
         })))
 }
 
+/// Show `label` in a tooltip above `content` once the pointer rests on it.
+/// The popup's icon-only buttons use their accessible names, so the two can't
+/// disagree.
+fn with_tooltip<'a>(content: impl Into<Element<'a, Message>>, label: String) -> Element<'a, Message> {
+    widget::tooltip(content, widget::text::caption(label), widget::tooltip::Position::Top)
+        .delay(std::time::Duration::from_millis(TOOLTIP_DELAY_MS))
+        .into()
+}
+
 /// A pill-shaped button in fixed colors, for the media popup's secondary
 /// controls. Hover and press tint the fill toward the ink.
 fn chip_button<'a>(
@@ -452,8 +461,8 @@ fn chip_button<'a>(
         s.text_color = Some(ink);
         s
     };
-    widget::button::custom(content)
-        .name(name)
+    let button = widget::button::custom(content)
+        .name(name.clone())
         .padding([6, 12])
         .class(cosmic::theme::Button::Custom {
             active: Box::new(move |_, _| style(0.0)),
@@ -461,8 +470,8 @@ fn chip_button<'a>(
             hovered: Box::new(move |_, _| style(0.12)),
             pressed: Box::new(move |_, _| style(0.2)),
         })
-        .on_press(on_press)
-        .into()
+        .on_press(on_press);
+    with_tooltip(button, name)
 }
 
 /// The speed the speed button moves to from `current`: the next step up in
@@ -514,12 +523,12 @@ fn round_button<'a>(
         s
     };
     let glyph = tinted_icon(icon, icon_size, ink);
-    widget::button::custom(
+    let button = widget::button::custom(
         widget::container(glyph)
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     )
-    .name(name)
+    .name(name.clone())
     .width(Length::Fixed(diameter))
     .height(Length::Fixed(diameter))
     .padding(0)
@@ -529,8 +538,8 @@ fn round_button<'a>(
         hovered: Box::new(move |_, _| style(0.12)),
         pressed: Box::new(move |_, _| style(0.2)),
     })
-    .on_press(on_press)
-    .into()
+    .on_press(on_press);
+    with_tooltip(button, name)
 }
 
 /// A rounded container in fixed colors, optionally outlined.
@@ -628,6 +637,33 @@ impl NowPlaying {
         };
         let margins = (self.config.left_margin.max(0) + self.config.right_margin.max(0)) as f32;
         (self.config.widget_width as f32 - icon_area - margins).max(0.0)
+    }
+
+    /// The panel tooltip: everything known about the track, one field per
+    /// line, since the strip shows only part of it (and none of it while the
+    /// hover controls are up).
+    fn panel_tooltip_text(&self) -> String {
+        [&self.track_title, &self.track_artist, &self.track_album]
+            .into_iter()
+            .filter(|field| !field.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Wrap the panel button in the panel's own tooltip surface, showing the
+    /// full track details. Suppressed while the popup is open.
+    fn with_panel_tooltip<'a>(&self, button: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+        self.core
+            .applet
+            .applet_tooltip::<Message>(
+                button,
+                self.panel_tooltip_text(),
+                self.popup.is_some(),
+                Message::Surface,
+                None,
+            )
+            .into()
     }
 
     /// A generous estimate of `text`'s width on the panel. Only used to decide
@@ -951,12 +987,14 @@ impl NowPlaying {
 
         // Wrap art in a button when there's a URL to open; plain container otherwise.
         let art: Element<'_, Message> = if self.openable_track_url().is_some() {
-            widget::button::custom(art_inner)
-                .name(fl!("a11y-open-track"))
-                .padding(0)
-                .on_press(Message::OpenTrackUrl)
-                .class(cosmic::theme::Button::Text)
-                .into()
+            with_tooltip(
+                widget::button::custom(art_inner)
+                    .name(fl!("a11y-open-track"))
+                    .padding(0)
+                    .on_press(Message::OpenTrackUrl)
+                    .class(cosmic::theme::Button::Text),
+                fl!("a11y-open-track"),
+            )
         } else {
             art_inner
         };
@@ -993,13 +1031,15 @@ impl NowPlaying {
         // Clicking the title and artist brings the player's own window
         // forward, for players that can do that.
         let details: Element<'_, Message> = if self.can_raise {
-            widget::button::custom(details)
-                .name(fl!("a11y-raise"))
-                .padding(0)
-                .width(Length::Fill)
-                .on_press(Message::RaisePlayer)
-                .class(cosmic::theme::Button::Text)
-                .into()
+            with_tooltip(
+                widget::button::custom(details)
+                    .name(fl!("a11y-raise"))
+                    .padding(0)
+                    .width(Length::Fill)
+                    .on_press(Message::RaisePlayer)
+                    .class(cosmic::theme::Button::Text),
+                fl!("a11y-raise"),
+            )
         } else {
             details.into()
         };
@@ -1764,6 +1804,8 @@ pub enum Message {
     /// Fired after typing pauses; saves the custom format (carries the edit's
     /// generation).
     CustomFormatSettled(u64),
+    /// A surface request from a widget — here, the panel tooltip's popup.
+    Surface(cosmic::surface::Action<Message>),
     /// User toggled the panel progress line.
     SetProgressLine(bool),
     /// Start the sleep timer for this many minutes, or turn it off (`None`).
@@ -1965,7 +2007,8 @@ impl cosmic::Application for NowPlaying {
                     .on_press(Message::TogglePopup)
             };
             let button = button.name(fl!("app-title")).description(self.display_text.clone());
-            return widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into();
+            return widget::autosize::autosize(self.with_panel_tooltip(button), AUTOSIZE_MAIN_ID.clone())
+                .into();
         }
 
         // The leading element beside the panel text depends on the user setting:
@@ -2169,7 +2212,7 @@ impl cosmic::Application for NowPlaying {
             .on_press(Message::TogglePopup)
             .class(cosmic::theme::Button::AppletIcon);
 
-        widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into()
+        widget::autosize::autosize(self.with_panel_tooltip(button), AUTOSIZE_MAIN_ID.clone()).into()
     }
 
     /// The popup window containing either media controls or configuration settings.
@@ -2950,6 +2993,9 @@ impl cosmic::Application for NowPlaying {
                     self.format_pending = false;
                     self.save_config();
                 }
+            }
+            Message::Surface(action) => {
+                return cosmic::task::message(cosmic::Action::Surface(action));
             }
             Message::SetProgressLine(enabled) => {
                 self.config.show_progress_line = enabled;
