@@ -135,6 +135,10 @@ pub struct NowPlaying {
     volume: Option<f64>,
     /// Whether the active player accepts control (MPRIS `CanControl`).
     can_control: bool,
+    /// The active player's shuffle state, when it supports shuffle.
+    shuffle: Option<bool>,
+    /// The active player's repeat mode, when it supports repeat.
+    loop_status: Option<mpris::LoopStatus>,
     /// Wheel movement not yet turned into whole steps. Touchpads and
     /// high-resolution wheels report fractions of a notch.
     scroll_steps: f32,
@@ -209,6 +213,8 @@ impl Default for NowPlaying {
             update_status: None,
             volume: None,
             can_control: true,
+            shuffle: None,
+            loop_status: None,
             scroll_steps: 0.0,
             last_scroll_skip: None,
             panel_notice: None,
@@ -588,6 +594,26 @@ impl NowPlaying {
         }
     }
 
+    /// Copy the active player's optional capabilities and settings (volume,
+    /// shuffle, repeat, …) into the model. Shared by the refresh and the player
+    /// picker so the two can't drift apart.
+    fn apply_capabilities(&mut self, player: Option<&mpris::PlayerInfo>) {
+        self.volume = player.and_then(|p| p.volume);
+        self.can_control = player.is_none_or(|p| p.can_control);
+        self.shuffle = player.and_then(|p| p.shuffle);
+        self.loop_status = player.and_then(|p| p.loop_status);
+    }
+
+    /// Send `command` to the active player, if there is one.
+    fn command_active(&self, command: mpris::MprisCommand) -> Task<cosmic::Action<Message>> {
+        match self.active_player_bus.clone() {
+            Some(bus) => Task::perform(mpris::send_command(bus, command), |_| {
+                cosmic::Action::App(Message::Ignore)
+            }),
+            None => Task::none(),
+        }
+    }
+
     /// Show `text` on the panel in place of the title for [`PANEL_NOTICE_MS`].
     fn show_panel_notice(&mut self, text: String) -> Task<cosmic::Action<Message>> {
         self.panel_notice = Some(text);
@@ -862,9 +888,34 @@ impl NowPlaying {
         } else {
             "media-playback-start-symbolic"
         };
-        let mut controls = widget::row::with_capacity(3)
-            .spacing(20)
-            .align_y(Vertical::Center);
+        // Shuffle and repeat flank the transport buttons, for players that
+        // support them and accept control. Lit when on, dimmed when off.
+        let mode_button = |icon: &'static str, on: bool, message: Message| {
+            let (fill, ink) = if on {
+                (with_alpha(pal.ink, 0.16), pal.ink)
+            } else {
+                (Color::TRANSPARENT, with_alpha(pal.ink, 0.5))
+            };
+            round_button(icon, 18, 36.0, fill, ink, message)
+        };
+        let shuffle_button = self
+            .shuffle
+            .filter(|_| self.can_control)
+            .map(|on| mode_button("media-playlist-shuffle-symbolic", on, Message::ToggleShuffle));
+        let repeat_button = self.loop_status.filter(|_| self.can_control).map(|status| {
+            let icon = if status == mpris::LoopStatus::Track {
+                "media-playlist-repeat-song-symbolic"
+            } else {
+                "media-playlist-repeat-symbolic"
+            };
+            mode_button(icon, status != mpris::LoopStatus::None, Message::CycleRepeat)
+        });
+        let has_modes = shuffle_button.is_some() || repeat_button.is_some();
+
+        let mut controls = widget::row::with_capacity(5)
+            .spacing(if has_modes { 12 } else { 20 })
+            .align_y(Vertical::Center)
+            .push_maybe(shuffle_button);
         if self.can_go_previous {
             controls = controls.push(round_button(
                 "media-skip-backward-symbolic",
@@ -893,6 +944,7 @@ impl NowPlaying {
                 Message::PlayerCommand(mpris::MprisCommand::Next),
             ));
         }
+        let controls = controls.push_maybe(repeat_button);
 
         let mut content = widget::column::with_capacity(7)
             .spacing(14)
@@ -1344,6 +1396,10 @@ pub enum Message {
     SetScrollAction(ScrollAction),
     /// User toggled middle-click play/pause.
     SetMiddleClick(bool),
+    /// Turn the active player's shuffle on or off.
+    ToggleShuffle,
+    /// Move the active player to its next repeat mode.
+    CycleRepeat,
 }
 
 /// Helper: creates the MPRIS refresh stream. It re-reads the players whenever
@@ -1821,8 +1877,7 @@ impl cosmic::Application for NowPlaying {
 
                 self.last_playing_buses = currently_playing;
                 self.players = players;
-                self.volume = active_player.as_ref().and_then(|p| p.volume);
-                self.can_control = active_player.as_ref().is_none_or(|p| p.can_control);
+                self.apply_capabilities(active_player.as_ref());
 
                 let (title, artist, art_url, art_bytes, status, has_player, active_bus,
                      new_length_us, new_track_id, new_position_us, new_track_url,
@@ -2021,8 +2076,7 @@ impl cosmic::Application for NowPlaying {
                     self.playback_status = p.playback_status.clone();
                     self.can_go_next = p.can_go_next;
                     self.can_go_previous = p.can_go_previous;
-                    self.volume = p.volume;
-                    self.can_control = p.can_control;
+                    self.apply_capabilities(Some(&p));
                     
                     if changed || !self.has_player {
                         self.track_title = p.metadata.title;
@@ -2344,6 +2398,20 @@ impl cosmic::Application for NowPlaying {
             Message::SetMiddleClick(enabled) => {
                 self.config.middle_click_play_pause = enabled;
                 self.save_config();
+            }
+            Message::ToggleShuffle => {
+                if let Some(on) = self.shuffle {
+                    // Shown at once; the player's PropertiesChanged confirms it.
+                    self.shuffle = Some(!on);
+                    return self.command_active(mpris::MprisCommand::SetShuffle(!on));
+                }
+            }
+            Message::CycleRepeat => {
+                if let Some(status) = self.loop_status {
+                    let next = status.cycled();
+                    self.loop_status = Some(next);
+                    return self.command_active(mpris::MprisCommand::SetLoopStatus(next));
+                }
             }
         }
         Task::none()

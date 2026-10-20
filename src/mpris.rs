@@ -205,6 +205,48 @@ impl PartialEq for TrackMetadata {
 }
 impl Eq for TrackMetadata {}
 
+/// The player's repeat mode (MPRIS `LoopStatus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopStatus {
+    /// Play through once and stop.
+    None,
+    /// Repeat the current track.
+    Track,
+    /// Repeat the whole playlist or queue.
+    Playlist,
+}
+
+impl LoopStatus {
+    /// Parse the spec's string value; `None` for anything unrecognized.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "None" => Some(Self::None),
+            "Track" => Some(Self::Track),
+            "Playlist" => Some(Self::Playlist),
+            _ => None,
+        }
+    }
+
+    /// The spec's string value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Track => "Track",
+            Self::Playlist => "Playlist",
+        }
+    }
+
+    /// The next mode in the order most players cycle through: off, repeat
+    /// all, repeat one.
+    pub fn cycled(self) -> Self {
+        match self {
+            Self::None => Self::Playlist,
+            Self::Playlist => Self::Track,
+            Self::Track => Self::None,
+        }
+    }
+}
+
 /// Commands that can be sent to the MPRIS player.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MprisCommand {
@@ -217,6 +259,10 @@ pub enum MprisCommand {
     SetPosition { track_id: String, position_us: i64 },
     /// Set the player's own volume, 0.0 (silent) to 1.0 (full).
     SetVolume(f64),
+    /// Turn shuffle on or off.
+    SetShuffle(bool),
+    /// Set the repeat mode.
+    SetLoopStatus(LoopStatus),
 }
 
 /// The upcoming queued track, if the player implements the optional
@@ -247,6 +293,10 @@ pub struct PlayerInfo {
     /// Whether the player accepts control at all (MPRIS `CanControl`). When it
     /// doesn't, property writes such as volume are refused.
     pub can_control: bool,
+    /// Whether shuffle is on, for players that support it.
+    pub shuffle: Option<bool>,
+    /// The repeat mode, for players that support it.
+    pub loop_status: Option<LoopStatus>,
 }
 
 /// Pull the four identity fields (track id, url, title, artist) out of an MPRIS
@@ -680,6 +730,8 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
         let can_go_previous = prop::<bool>(&props, "CanGoPrevious").unwrap_or(true);
         let volume = prop::<f64>(&props, "Volume").filter(|v| v.is_finite());
         let can_control = prop::<bool>(&props, "CanControl").unwrap_or(true);
+        let shuffle = prop::<bool>(&props, "Shuffle");
+        let loop_status = prop::<String>(&props, "LoopStatus").and_then(|s| LoopStatus::parse(&s));
 
         // One line per player, emitted only when its state actually changes —
         // logging every refresh would bury everything else. Position is
@@ -691,7 +743,8 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
 
             let signature = format!(
                 "status={playback_status} title={:?} artist={:?} len={}ms \
-                 can_next={can_go_next} art={:?}",
+                 can_next={can_go_next} volume={volume:?} shuffle={shuffle:?} \
+                 loop={loop_status:?} art={:?}",
                 metadata.title,
                 metadata.artist,
                 metadata.length_us / 1_000,
@@ -724,6 +777,8 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             next_track,
             volume,
             can_control,
+            shuffle,
+            loop_status,
         });
     }
 
@@ -823,5 +878,27 @@ pub async fn send_command(bus_name: String, command: MprisCommand) {
         MprisCommand::SetVolume(volume) => {
             let _ = player_proxy.set_property("Volume", volume.clamp(0.0, 1.0)).await;
         }
+        MprisCommand::SetShuffle(on) => {
+            let _ = player_proxy.set_property("Shuffle", on).await;
+        }
+        MprisCommand::SetLoopStatus(status) => {
+            let _ = player_proxy.set_property("LoopStatus", status.as_str()).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loop_status_round_trips_and_cycles_off_all_one() {
+        for status in [LoopStatus::None, LoopStatus::Track, LoopStatus::Playlist] {
+            assert_eq!(LoopStatus::parse(status.as_str()), Some(status));
+        }
+        assert_eq!(LoopStatus::parse("Bogus"), None);
+        assert_eq!(LoopStatus::None.cycled(), LoopStatus::Playlist);
+        assert_eq!(LoopStatus::Playlist.cycled(), LoopStatus::Track);
+        assert_eq!(LoopStatus::Track.cycled(), LoopStatus::None);
     }
 }
