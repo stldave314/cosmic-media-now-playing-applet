@@ -6,7 +6,8 @@ use crate::constants::{
     SKIP_FORWARD_SECS, BACKDROP_SCRIM, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS,
     MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_IDLE_POLL_INTERVAL_MS,
     MPRIS_POLL_INTERVAL_MS,
-    MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
+    MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, PANEL_PROGRESS_HEIGHT, PANEL_PROGRESS_INSET,
+    PANEL_PROGRESS_TICK_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
     SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, SETTINGS_MAX_HEIGHT, SLEEP_TIMER_OPTIONS,
     SLEEP_TIMER_REDRAW_SECS, VOLUME_STEP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
@@ -699,6 +700,15 @@ impl NowPlaying {
         self.can_seek = player.is_none_or(|p| p.can_seek);
         self.rate = player.map_or(1.0, |p| p.rate);
         self.rate_range = player.and_then(|p| p.rate_range);
+    }
+
+    /// How far through the track playback is (0.0–1.0), when the panel
+    /// progress line should be drawn: enabled, a known duration, and not
+    /// stopped.
+    fn panel_progress(&self) -> Option<f32> {
+        (self.config.show_progress_line && self.length_us > 0 && !self.is_stopped()).then(|| {
+            (self.effective_position_us() / self.length_us as f64).clamp(0.0, 1.0) as f32
+        })
     }
 
     /// The playback position now, in microseconds: the last reported value
@@ -1493,6 +1503,11 @@ impl NowPlaying {
                 _ => ScrollAction::Nothing,
             })
         });
+        let progress_line_toggle = labeled_toggle(
+            fl!("progress-line"),
+            self.config.show_progress_line,
+            Some(Message::SetProgressLine),
+        );
         let middle_click_toggle = labeled_toggle(
             fl!("middle-click"),
             self.config.middle_click_play_pause,
@@ -1559,6 +1574,7 @@ impl NowPlaying {
             .push_maybe(icon_spacing_section)
             .push(idle_clear_section)
             .push(hover_toggle)
+            .push(progress_line_toggle)
             .push(labeled_control(fl!("scroll-wheel"), scroll_dropdown))
             .push(middle_click_toggle)
             .push(widget::divider::horizontal::default())
@@ -1692,6 +1708,8 @@ pub enum Message {
     /// Fired after typing pauses; saves the custom format (carries the edit's
     /// generation).
     CustomFormatSettled(u64),
+    /// User toggled the panel progress line.
+    SetProgressLine(bool),
     /// Start the sleep timer for this many minutes, or turn it off (`None`).
     SetSleepTimer(Option<u32>),
     /// The sleep timer ran out.
@@ -1766,6 +1784,16 @@ fn sleep_timer_stream(
             }
             let step = (deadline - now).min(std::time::Duration::from_secs(SLEEP_TIMER_REDRAW_SECS));
             tokio::time::sleep(step).await;
+            _ = channel.send(Message::Ignore).await;
+        }
+    })
+}
+
+/// Helper: once-a-second redraw for the panel progress line.
+fn panel_progress_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    cosmic::iced::stream::channel(1, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(PANEL_PROGRESS_TICK_MS)).await;
             _ = channel.send(Message::Ignore).await;
         }
     })
@@ -2011,6 +2039,52 @@ impl cosmic::Application for NowPlaying {
             .center_y(Length::Fill)
             .padding(padding);
 
+        // The optional progress line, laid over the bottom of the strip and
+        // inset by the same horizontal margins as the content.
+        let content: Element<'_, Message> = match self.panel_progress() {
+            Some(fraction) => {
+                let theme = cosmic::theme::active();
+                let accent: Color = theme.cosmic().accent_color().into();
+                let track = with_alpha(theme.cosmic().background(theme.transparent).on.into(), 0.2);
+                let line_width = (widget_width
+                    - (self.config.left_margin.max(0) + self.config.right_margin.max(0)) as f32)
+                    .max(0.0);
+                let segment = |width: Length, color: Color| {
+                    widget::container(widget::Space::new())
+                        .width(width)
+                        .height(Length::Fixed(PANEL_PROGRESS_HEIGHT))
+                        .class(cosmic::theme::Container::custom(move |_| widget::container::Style {
+                            background: Some(cosmic::iced::Background::Color(color)),
+                            border: cosmic::iced::Border {
+                                radius: (PANEL_PROGRESS_HEIGHT / 2.0).into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }))
+                };
+                let line = widget::row::with_capacity(2)
+                    .push(segment(Length::Fixed((line_width * fraction).round()), accent))
+                    .push(segment(Length::Fill, track));
+                let line = widget::container(line)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_y(Vertical::Bottom)
+                    .padding([
+                        0,
+                        self.config.right_margin.max(0) as u16,
+                        PANEL_PROGRESS_INSET,
+                        self.config.left_margin.max(0) as u16,
+                    ]);
+                cosmic::iced::widget::Stack::new()
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .push(content)
+                    .push(line)
+                    .into()
+            }
+            None => content.into(),
+        };
+
         // One AppletIcon button makes the whole widget clickable (opening the
         // popup) and shows the pointer cursor over it. `on_press` (rather than
         // `on_press_down`) is what enables that pointer affordance. Nested
@@ -2070,6 +2144,12 @@ impl cosmic::Application for NowPlaying {
         // the timer restarts it and turning it off drops it.
         if let Some((deadline, _)) = self.sleep_timer {
             subs.push(Subscription::run_with(deadline, sleep_timer_stream));
+        }
+
+        // 3a''. Panel progress line — redrawn once a second, only while it's
+        // shown and moving.
+        if self.panel_progress().is_some() && self.playback_status == "Playing" {
+            subs.push(Subscription::run_with(3u8, panel_progress_stream));
         }
 
         // 3b. Progress-bar smoothing — only while the media popup is open and a
@@ -2795,6 +2875,10 @@ impl cosmic::Application for NowPlaying {
                     self.format_pending = false;
                     self.save_config();
                 }
+            }
+            Message::SetProgressLine(enabled) => {
+                self.config.show_progress_line = enabled;
+                self.save_config();
             }
             Message::SetSleepTimer(minutes) => {
                 crate::debug_log!(crate::debug::UI, "sleep timer → {minutes:?} min");

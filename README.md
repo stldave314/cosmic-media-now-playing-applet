@@ -84,6 +84,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | Feature | Description |
 |---------|-------------|
 | 🎵 **Inline panel display** | Album art (or music-note icon) plus the track name, right on the panel bar |
+| ➖ **Progress on the panel** | Optionally, a thin accent-colored line along the bottom of the panel strip shows how far through the track you are, without opening the popup |
 | 🖼️ **Panel album art** | The panel icon can be the live album-art thumbnail, a music note, or nothing |
 | 🎚️ **Hover controls** | Hover the panel for inline previous / play-pause / next / stop; the icon/art still opens the popup |
 | 🖱️ **Scroll & middle-click** | Scroll over the applet to change the player's volume (with a brief *Volume 45%* on the panel) or to skip tracks; middle-click to play or pause |
@@ -318,6 +319,7 @@ The bottom row of the popup is a **sleep timer**. Pick a length from its menu an
 | **Album Art Size** | 12 – 48 px | 16 px | Size of the panel thumbnail (and music-note fallback) |
 | **Icon Spacing** | 0 – 40 px | 6 px | Gap between icon/art and title; hidden when Panel Icon is "No Icon" |
 | **Show Controls on Hover** | On / Off | On | Requires a Panel Icon other than "No Icon"; prev/next appear only when supported and there's room |
+| **Show Progress on Panel** | On / Off | Off | A 2 px line under the title, inset by the left/right margins; drawn only when the player reports a duration, and redrawn once a second only while playing |
 | **Scroll Wheel** | Change Volume · Skip Tracks · Off | Change Volume | Wheel up raises the player's own volume by 5% per notch and shows the new level on the panel briefly; in Skip Tracks, wheel down goes to the next track and up to the previous one, one track per flick. Works only with players that report a volume and accept control |
 | **Middle-Click to Play/Pause** | On / Off | On | |
 | **Follow the Player That Starts Playing** | On / Off | On | When off, the applet stays on the player chosen in the popup until that player goes away |

@@ -47,3 +47,4 @@ sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Pauzeert over { $minutes } min
 format-custom = Aangepast
 custom-format-hint = Plaatsaanduidingen: { $placeholders }
+progress-line = Voortgang in paneel tonen

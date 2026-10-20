@@ -47,3 +47,4 @@ sleep-timer-option = { $minutes } мин
 sleep-timer-remaining = Пауза через { $minutes } мин
 format-custom = Свой
 custom-format-hint = Подстановки: { $placeholders }
+progress-line = Показывать прогресс на панели

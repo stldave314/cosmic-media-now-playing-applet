@@ -47,3 +47,4 @@ sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Pausa em { $minutes } min
 format-custom = Personalizado
 custom-format-hint = Marcadores: { $placeholders }
+progress-line = Mostrar progresso no painel

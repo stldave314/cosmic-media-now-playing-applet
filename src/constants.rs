@@ -36,6 +36,19 @@ pub const MUSIC_NOTE_SIZE: f32 = 16.0;
 /// its spacing. Used to decide whether all three controls fit.
 pub const CONTROL_BUTTON_WIDTH: f32 = 34.0;
 
+/// Thickness in pixels of the optional progress line along the bottom of the
+/// panel strip.
+pub const PANEL_PROGRESS_HEIGHT: f32 = 2.0;
+
+/// Gap in pixels between the progress line and the bottom edge of the panel,
+/// so the hover highlight's rounded corners don't clip it.
+pub const PANEL_PROGRESS_INSET: u16 = 3;
+
+/// How often the panel progress line is redrawn while playing. One pixel of a
+/// 200-pixel line is about a second of a three-minute track, so faster would
+/// only cost wake-ups.
+pub const PANEL_PROGRESS_TICK_MS: u64 = 1_000;
+
 /// How much one notch of the mouse wheel changes the player's volume, as a
 /// fraction of full scale.
 pub const VOLUME_STEP: f64 = 0.05;

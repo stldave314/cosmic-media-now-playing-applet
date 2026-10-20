@@ -47,3 +47,4 @@ sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Pausa tra { $minutes } min
 format-custom = Personalizzato
 custom-format-hint = Segnaposto: { $placeholders }
+progress-line = Mostra avanzamento nel pannello

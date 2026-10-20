@@ -47,3 +47,4 @@ sleep-timer-option = { $minutes } 分钟
 sleep-timer-remaining = { $minutes } 分钟后暂停
 format-custom = 自定义
 custom-format-hint = 占位符：{ $placeholders }
+progress-line = 在面板上显示进度

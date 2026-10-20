@@ -196,6 +196,8 @@ pub struct NowPlayingConfig {
     pub hidden_players: Vec<HiddenPlayer>,
     /// The template used by [`DisplayFormat::Custom`].
     pub custom_format: String,
+    /// Draw a thin playback-progress line along the bottom of the panel strip.
+    pub show_progress_line: bool,
 }
 
 impl NowPlayingConfig {
@@ -247,6 +249,7 @@ impl Default for NowPlayingConfig {
             auto_switch: true,
             hidden_players: Vec::new(),
             custom_format: DEFAULT_CUSTOM_FORMAT.to_string(),
+            show_progress_line: false,
         }
     }
 }

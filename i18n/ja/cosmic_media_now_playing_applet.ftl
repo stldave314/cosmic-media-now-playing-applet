@@ -47,3 +47,4 @@ sleep-timer-option = { $minutes } 分
 sleep-timer-remaining = { $minutes } 分後に一時停止
 format-custom = カスタム
 custom-format-hint = プレースホルダー: { $placeholders }
+progress-line = パネルに進行状況を表示
