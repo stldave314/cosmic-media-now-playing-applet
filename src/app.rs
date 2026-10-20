@@ -48,6 +48,15 @@ pub struct NowPlaying {
     track_title: String,
     /// Current track artist from MPRIS.
     track_artist: String,
+    /// Current track album from MPRIS (empty when not published).
+    track_album: String,
+    /// Debounce generation for edits to the custom display format: the
+    /// template is shown live as it's typed but saved only once typing pauses.
+    format_settle_gen: u64,
+    /// Whether a custom-format edit is waiting to be saved. While it is, a
+    /// config update from disk keeps the in-memory template, so an earlier
+    /// save's echo can't rewind what's being typed.
+    format_pending: bool,
     /// The fully-formatted display string (formatted from title + artist).
     display_text: String,
     /// Current scroll offset in characters for the marquee effect.
@@ -197,6 +206,9 @@ impl Default for NowPlaying {
             config: NowPlayingConfig::default(),
             track_title: String::new(),
             track_artist: String::new(),
+            track_album: String::new(),
+            format_settle_gen: 0,
+            format_pending: false,
             display_text: String::new(),
             scroll_offset: 0,
             has_player: false,
@@ -574,10 +586,12 @@ impl NowPlaying {
         if !self.has_player || self.track_title.is_empty() {
             self.display_text = fl!("no-media");
         } else {
-            self.display_text =
-                self.config
-                    .display_format
-                    .format(&self.track_title, &self.track_artist);
+            self.display_text = self.config.display_format.format(
+                &self.track_title,
+                &self.track_artist,
+                &self.track_album,
+                &self.config.custom_format,
+            );
         }
         // Reset scroll when the text changes.
         self.scroll_offset = 0;
@@ -923,6 +937,14 @@ impl NowPlaying {
         if !self.track_artist.is_empty() {
             details = details.push(
                 widget::text::body(self.track_artist.clone())
+                    .class(cosmic::theme::Text::Color(pal.ink_dim))
+                    .ellipsize(one_line)
+                    .width(Length::Fill),
+            );
+        }
+        if !self.track_album.is_empty() {
+            details = details.push(
+                widget::text::caption(self.track_album.clone())
                     .class(cosmic::theme::Text::Color(pal.ink_dim))
                     .ellipsize(one_line)
                     .width(Length::Fill),
@@ -1330,11 +1352,13 @@ impl NowPlaying {
             fl!("format-title-only"),
             fl!("format-artist-title"),
             fl!("format-title-artist"),
+            fl!("format-custom"),
         ];
         let format_selected = Some(match self.config.display_format {
             DisplayFormat::TitleOnly => 0,
             DisplayFormat::ArtistTitle => 1,
             DisplayFormat::TitleArtist => 2,
+            DisplayFormat::Custom => 3,
         });
         let format_dropdown = widget::dropdown(
             format_options,
@@ -1342,9 +1366,28 @@ impl NowPlaying {
             |i| Message::SetDisplayFormat(match i {
                 0 => DisplayFormat::TitleOnly,
                 1 => DisplayFormat::ArtistTitle,
-                _ => DisplayFormat::TitleArtist,
+                2 => DisplayFormat::TitleArtist,
+                _ => DisplayFormat::Custom,
             }),
         );
+        // The template field, only for the Custom format.
+        let custom_format_section: Option<Element<'_, Message>> =
+            (self.config.display_format == DisplayFormat::Custom).then(|| {
+                widget::column::with_capacity(2)
+                    .spacing(4)
+                    .push(
+                        widget::text_input(
+                            crate::config::DEFAULT_CUSTOM_FORMAT,
+                            self.config.custom_format.as_str(),
+                        )
+                        .on_input(Message::SetCustomFormat),
+                    )
+                    .push(widget::text::caption(fl!(
+                        "custom-format-hint",
+                        placeholders = "{title}  {artist}  {album}"
+                    )))
+                    .into()
+            });
 
         let margin_label = format!("{}: {}px", fl!("top-margin"), self.config.top_margin);
         let margin_slider =
@@ -1510,6 +1553,7 @@ impl NowPlaying {
             .push(labeled_slider(right_margin_label, right_margin_slider))
             .push(labeled_slider(speed_label, speed_slider))
             .push(labeled_control(format_label, format_dropdown))
+            .push_maybe(custom_format_section)
             .push(labeled_control(panel_icon_label, panel_icon_dropdown))
             .push(labeled_slider(art_size_label, art_size_slider))
             .push_maybe(icon_spacing_section)
@@ -1643,6 +1687,11 @@ pub enum Message {
     CycleRepeat,
     /// Bring the active player's window forward and close the popup.
     RaisePlayer,
+    /// The custom display format was edited (live, while typing).
+    SetCustomFormat(String),
+    /// Fired after typing pauses; saves the custom format (carries the edit's
+    /// generation).
+    CustomFormatSettled(u64),
     /// Start the sleep timer for this many minutes, or turn it off (`None`).
     SetSleepTimer(Option<u32>),
     /// The sleep timer ran out.
@@ -2184,6 +2233,10 @@ impl cosmic::Application for NowPlaying {
                 self.players = players;
                 self.apply_capabilities(active_player.as_ref());
 
+                let album = active_player
+                    .as_ref()
+                    .map(|p| p.metadata.album.clone())
+                    .unwrap_or_default();
                 let (title, artist, art_url, art_bytes, status, has_player, active_bus,
                      new_length_us, new_track_id, new_position_us, new_track_url,
                      new_can_next, new_can_prev, new_next_track) =
@@ -2204,6 +2257,7 @@ impl cosmic::Application for NowPlaying {
 
                 let changed = self.track_title != title
                     || self.track_artist != artist
+                    || self.track_album != album
                     || self.has_player != has_player;
 
                 let art_changed = self.art_url != art_url;
@@ -2317,6 +2371,7 @@ impl cosmic::Application for NowPlaying {
                 if changed {
                     self.track_title = title;
                     self.track_artist = artist;
+                    self.track_album = album;
                     self.has_player = has_player;
                     self.rebuild_display_text();
                 }
@@ -2375,7 +2430,9 @@ impl cosmic::Application for NowPlaying {
                 self.save_config();
 
                 if let Some(p) = self.players.iter().find(|p| p.bus_name == bus_name).cloned() {
-                    let changed = self.track_title != p.metadata.title || self.track_artist != p.metadata.artist;
+                    let changed = self.track_title != p.metadata.title
+                        || self.track_artist != p.metadata.artist
+                        || self.track_album != p.metadata.album;
                     let art_changed = self.art_url != p.metadata.art_url;
 
                     self.playback_status = p.playback_status.clone();
@@ -2386,6 +2443,7 @@ impl cosmic::Application for NowPlaying {
                     if changed || !self.has_player {
                         self.track_title = p.metadata.title;
                         self.track_artist = p.metadata.artist;
+                        self.track_album = p.metadata.album;
                         self.has_player = true;
                         self.rebuild_display_text();
                     }
@@ -2610,7 +2668,12 @@ impl cosmic::Application for NowPlaying {
             Message::ConfigChanged(config) => {
                 // Externally-edited files can hold out-of-range values; clamp
                 // at the boundary like init() does.
-                let config = config.clamped();
+                let mut config = config.clamped();
+                // Keep a template that's still being typed (see
+                // `format_pending`).
+                if self.format_pending {
+                    config.custom_format.clone_from(&self.config.custom_format);
+                }
                 if self.config != config {
                     self.config = config;
                     self.slider_width = self.config.widget_width;
@@ -2709,6 +2772,28 @@ impl cosmic::Application for NowPlaying {
                     // Shown at once; the player's PropertiesChanged confirms it.
                     self.shuffle = Some(!on);
                     return self.command_active(mpris::MprisCommand::SetShuffle(!on));
+                }
+            }
+            Message::SetCustomFormat(template) => {
+                // Shown at once; saved when typing pauses, so each keystroke
+                // doesn't rewrite the config file.
+                self.config.custom_format = template;
+                self.rebuild_display_text();
+                self.format_pending = true;
+                self.format_settle_gen += 1;
+                let gen = self.format_settle_gen;
+                return Task::perform(
+                    async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(WIDTH_SETTLE_MS)).await;
+                        gen
+                    },
+                    |gen| cosmic::Action::App(Message::CustomFormatSettled(gen)),
+                );
+            }
+            Message::CustomFormatSettled(gen) => {
+                if gen == self.format_settle_gen {
+                    self.format_pending = false;
+                    self.save_config();
                 }
             }
             Message::SetSleepTimer(minutes) => {

@@ -45,3 +45,5 @@ decimal-separator = ,
 sleep-timer = Schlummer-Timer
 sleep-timer-option = { $minutes } Min.
 sleep-timer-remaining = Pausiert in { $minutes } Min.
+format-custom = Eigenes
+custom-format-hint = Platzhalter: { $placeholders }

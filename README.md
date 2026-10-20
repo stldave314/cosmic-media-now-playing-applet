@@ -104,7 +104,8 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | 🙈 **Hide players** | Switch off any player (a video call, a muted autoplay tab, a notification sound) so it never takes over the panel or appears in the player list; remembered across restarts and new browser instances |
 | 📜 **Marquee scrolling** | Long titles scroll with adjustable speed — or set it to **Off** for a static title |
 | 📏 **Width, margins & spacing** | Widget width (100–500 px), top/left/right margins, and the icon-to-title gap |
-| 🎨 **Display formats** | Title Only, Artist — Title, or Title — Artist |
+| 🎨 **Display formats** | Title Only, Artist — Title, Title — Artist, or your own template using `{title}`, `{artist}`, and `{album}` — fields a player leaves out are tidied away |
+| 💿 **Album name** | Shown under the artist in the popup when the player publishes it |
 | 🖱️ **Click anywhere** | The whole widget is clickable (with a pointer cursor) to open the popup |
 | 👻 **Invisible when idle** | Takes up zero panel space when nothing is playing |
 | 📐 **Vertical panels** | On a left/right panel the applet collapses to a square art/icon button that opens the popup |
@@ -312,7 +313,7 @@ The bottom row of the popup is a **sleep timer**. Pick a length from its menu an
 | **Left Margin** | 0 – 40 px | 5 px | Padding before the icon/content |
 | **Right Margin** | 0 – 40 px | 0 px | Padding after the content |
 | **Scroll Speed** | Off, 1 – 10 | 5 | 1 ≈ 300 ms/step, 10 ≈ 30 ms/step. **Off** keeps the visible portion static until the track changes |
-| **Display Format** | Title Only · Artist — Title · Title — Artist | Artist — Title | Falls back to title alone when the player reports no artist |
+| **Display Format** | Title Only · Artist — Title · Title — Artist · Custom | Artist — Title | Falls back to title alone when the player reports no artist. **Custom** shows a template field (default `{artist} — {title} ({album})`); everything other than the three placeholders is kept as typed, and a field the player leaves out takes its empty brackets and dangling separator with it. The template is saved once you pause typing |
 | **Panel Icon** | Album Art · Music Note · No Icon | Album Art | Album Art falls back to a music note when no art is available |
 | **Album Art Size** | 12 – 48 px | 16 px | Size of the panel thumbnail (and music-note fallback) |
 | **Icon Spacing** | 0 – 40 px | 6 px | Gap between icon/art and title; hidden when Panel Icon is "No Icon" |

@@ -45,3 +45,5 @@ decimal-separator = .
 sleep-timer = 睡眠定时器
 sleep-timer-option = { $minutes } 分钟
 sleep-timer-remaining = { $minutes } 分钟后暂停
+format-custom = 自定义
+custom-format-hint = 占位符：{ $placeholders }

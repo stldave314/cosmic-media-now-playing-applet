@@ -45,3 +45,5 @@ decimal-separator = .
 sleep-timer = スリープタイマー
 sleep-timer-option = { $minutes } 分
 sleep-timer-remaining = { $minutes } 分後に一時停止
+format-custom = カスタム
+custom-format-hint = プレースホルダー: { $placeholders }

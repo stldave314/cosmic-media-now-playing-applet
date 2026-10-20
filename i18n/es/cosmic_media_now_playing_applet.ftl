@@ -45,3 +45,5 @@ decimal-separator = ,
 sleep-timer = Temporizador de apagado
 sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Se pausa en { $minutes } min
+format-custom = Personalizado
+custom-format-hint = Marcadores: { $placeholders }

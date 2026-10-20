@@ -182,6 +182,8 @@ pub async fn read_art_url_for_player(bus_name: Option<&str>, url: &str) -> Optio
 pub struct TrackMetadata {
     pub title: String,
     pub artist: String,
+    /// The album (`xesam:album`), empty when the player doesn't say.
+    pub album: String,
     pub art_url: Option<String>,
     /// Pre-fetched image bytes for file:// art URLs, read immediately while the
     /// temporary file still exists (browsers delete it shortly after writing).
@@ -198,6 +200,7 @@ impl PartialEq for TrackMetadata {
     fn eq(&self, other: &Self) -> bool {
         self.title == other.title
             && self.artist == other.artist
+            && self.album == other.album
             && self.art_url == other.art_url
             && self.length_us == other.length_us
             && self.track_id == other.track_id
@@ -700,6 +703,7 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             let (track_id, track_url, title, artist) = metadata_identity(&metadata_map);
 
             let art_url = prop::<String>(&metadata_map, "mpris:artUrl");
+            let album = prop::<String>(&metadata_map, "xesam:album").unwrap_or_default();
 
             // Duration in microseconds.
             let length_us = prop_i64(&metadata_map, "mpris:length").unwrap_or(0);
@@ -737,7 +741,7 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
                 art_url
             };
 
-            TrackMetadata { title, artist, art_url, art_bytes, length_us, track_id, track_url }
+            TrackMetadata { title, artist, album, art_url, art_bytes, length_us, track_id, track_url }
         } else {
             TrackMetadata::default()
         };

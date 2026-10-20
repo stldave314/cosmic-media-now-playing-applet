@@ -45,3 +45,5 @@ decimal-separator = ,
 sleep-timer = Minuterie de veille
 sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Pause dans { $minutes } min
+format-custom = Personnalisé
+custom-format-hint = Champs : { $placeholders }

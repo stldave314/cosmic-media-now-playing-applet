@@ -45,3 +45,5 @@ decimal-separator = ,
 sleep-timer = Timer de desligamento
 sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Pausa em { $minutes } min
+format-custom = Personalizado
+custom-format-hint = Marcadores: { $placeholders }

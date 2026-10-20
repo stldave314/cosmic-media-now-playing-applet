@@ -45,3 +45,5 @@ decimal-separator = ,
 sleep-timer = Wyłącznik czasowy
 sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Wstrzymanie za { $minutes } min
+format-custom = Własny
+custom-format-hint = Symbole zastępcze: { $placeholders }

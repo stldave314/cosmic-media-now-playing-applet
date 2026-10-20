@@ -45,3 +45,5 @@ decimal-separator = ,
 sleep-timer = Timer di spegnimento
 sleep-timer-option = { $minutes } min
 sleep-timer-remaining = Pausa tra { $minutes } min
+format-custom = Personalizzato
+custom-format-hint = Segnaposto: { $placeholders }
