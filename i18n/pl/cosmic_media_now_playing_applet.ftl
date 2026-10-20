@@ -42,3 +42,6 @@ players-hint = Wyłącz odtwarzacz, aby ukryć go na panelu i na liście odtwarz
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Wyłącznik czasowy
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Wstrzymanie za { $minutes } min

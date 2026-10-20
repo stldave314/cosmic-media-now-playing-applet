@@ -42,3 +42,6 @@ players-hint = Désactivez un lecteur pour le masquer du panneau et de la liste 
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Minuterie de veille
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Pause dans { $minutes } min

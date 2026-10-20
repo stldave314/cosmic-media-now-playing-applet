@@ -42,3 +42,6 @@ players-hint = Zet een speler uit om hem te verbergen in het paneel en de speler
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Slaaptimer
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Pauzeert over { $minutes } min

@@ -94,6 +94,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | ⏩ **Seekable progress bar** | Scrub the track with a draggable slider and elapsed / total time — updated smoothly, not once a second |
 | 🎙️ **Podcast controls** | On tracks of ten minutes or more, jump back 15 s or forward 30 s and cycle the playback speed (1× → 1.25× → 1.5× → 1.75× → 2×), each when the player supports it |
 | ⏸️ **Pause before next track** | Arm a one-shot stop: the current track finishes, then playback halts before the next one starts. Ideal for ending a session on the track you're on |
+| 🌙 **Sleep timer** | Pause everything that's playing after 15, 30, 45, 60, 90, or 120 minutes; the popup counts down while it runs |
 | ⏭️ **Next-track preview** | Shows the upcoming queued track for players that expose the MPRIS `TrackList` interface |
 | 🌫️ **Album-art backdrop** | The popup is drawn over a blurred copy of the cover, with a gradient that keeps text and controls readable on any image |
 | 🪟 **Jump to the player** | Click the title in the popup to bring the player's own window forward (MPRIS `Raise`), for players that support it |
@@ -297,6 +298,10 @@ Below the playback controls is a switch that arms a **one-shot stop**: the curre
 - It **disarms itself** after firing, and pressing play/pause manually also cancels it.
 - It's **disabled when there is no next track** (MPRIS `CanGoNext`).
 - It stops shortly *before* the current track ends, so the player never advances into the next one.
+
+### Sleep Timer
+
+The bottom row of the popup is a **sleep timer**. Pick a length from its menu and, when it runs out, every player that is playing is paused — not just the one on show, since the point is silence. While it runs, the row is outlined in your accent color and shows the minutes left; choose a length again to restart it, or **Off** to cancel. It isn't saved, so restarting the applet (or logging out) turns it off.
 
 ### Settings Reference
 

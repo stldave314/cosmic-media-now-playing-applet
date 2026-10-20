@@ -42,3 +42,6 @@ players-hint = オフにしたプレーヤーはパネルとプレーヤー一�
 seek-seconds = { $seconds }秒
 playback-rate = { $rate }×
 decimal-separator = .
+sleep-timer = スリープタイマー
+sleep-timer-option = { $minutes } 分
+sleep-timer-remaining = { $minutes } 分後に一時停止

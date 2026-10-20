@@ -42,3 +42,6 @@ players-hint = Switch a player off to hide it from the panel and the player list
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = .
+sleep-timer = Sleep timer
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Pauses in { $minutes } min

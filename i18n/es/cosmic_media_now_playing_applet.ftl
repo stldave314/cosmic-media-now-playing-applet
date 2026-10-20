@@ -42,3 +42,6 @@ players-hint = Desactiva un reproductor para ocultarlo del panel y de la lista d
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Temporizador de apagado
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Se pausa en { $minutes } min

@@ -42,3 +42,6 @@ players-hint = Disattiva un lettore per nasconderlo dal pannello e dall'elenco d
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Timer di spegnimento
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Pausa tra { $minutes } min

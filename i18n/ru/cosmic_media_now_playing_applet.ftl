@@ -42,3 +42,6 @@ players-hint = Выключите проигрыватель, чтобы скр�
 seek-seconds = { $seconds } с
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Таймер сна
+sleep-timer-option = { $minutes } мин
+sleep-timer-remaining = Пауза через { $minutes } мин

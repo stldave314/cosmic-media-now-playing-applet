@@ -42,3 +42,6 @@ players-hint = Schalte einen Player aus, um ihn im Panel und in der Playerliste 
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Schlummer-Timer
+sleep-timer-option = { $minutes } Min.
+sleep-timer-remaining = Pausiert in { $minutes } Min.

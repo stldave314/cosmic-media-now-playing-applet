@@ -176,6 +176,13 @@ pub const SCROLL_TICK_BASE_MS: u64 = 330;
 pub const SCROLL_TICK_STEP_MS: u64 = 30;
 pub const SCROLL_TICK_MIN_MS: u64 = 30;
 
+/// Sleep-timer lengths offered in the popup, in minutes.
+pub const SLEEP_TIMER_OPTIONS: [u32; 6] = [15, 30, 45, 60, 90, 120];
+
+/// How often a running sleep timer wakes the popup to update its countdown,
+/// in seconds. The countdown is shown in whole minutes.
+pub const SLEEP_TIMER_REDRAW_SECS: u64 = 30;
+
 // ── "Pause before playing next track" ──────────────────────────────────────────
 
 /// How far before the end of the current track the armed watcher pauses.

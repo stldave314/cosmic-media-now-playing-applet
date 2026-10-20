@@ -7,7 +7,8 @@ use crate::constants::{
     MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_IDLE_POLL_INTERVAL_MS,
     MPRIS_POLL_INTERVAL_MS,
     MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
-    SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, SETTINGS_MAX_HEIGHT, VOLUME_STEP,
+    SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, SETTINGS_MAX_HEIGHT, SLEEP_TIMER_OPTIONS,
+    SLEEP_TIMER_REDRAW_SECS, VOLUME_STEP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
@@ -149,6 +150,10 @@ pub struct NowPlaying {
     rate: f64,
     /// The speeds the active player accepts, when it can change speed.
     rate_range: Option<(f64, f64)>,
+    /// When the sleep timer pauses playback, and the length that was chosen
+    /// (for the dropdown). `None` while the timer is off. Not persisted: a
+    /// restarted applet starts with it off.
+    sleep_timer: Option<(std::time::Instant, u32)>,
     /// Every player seen this session as (key, display name), hidden or not,
     /// in order of first appearance — the settings list of players.
     known_players: Vec<(String, String)>,
@@ -231,6 +236,7 @@ impl Default for NowPlaying {
             can_raise: false,
             known_players: Vec::new(),
             can_seek: true,
+            sleep_timer: None,
             rate: 1.0,
             rate_range: None,
             scroll_steps: 0.0,
@@ -1161,6 +1167,52 @@ impl NowPlaying {
             Element::from(pause_container)
         });
 
+        // Sleep timer: pause everything after a chosen time. The label shows
+        // the minutes left while it runs.
+        let mut sleep_options: Vec<String> = vec![fl!("scroll-off")];
+        for minutes in SLEEP_TIMER_OPTIONS {
+            sleep_options.push(fl!("sleep-timer-option", minutes = minutes));
+        }
+        let sleep_selected = Some(match self.sleep_timer {
+            Some((_, minutes)) => SLEEP_TIMER_OPTIONS
+                .iter()
+                .position(|m| *m == minutes)
+                .map_or(0, |i| i + 1),
+            None => 0,
+        });
+        let sleep_dropdown = widget::dropdown(sleep_options, sleep_selected, |i| {
+            Message::SetSleepTimer(i.checked_sub(1).and_then(|i| SLEEP_TIMER_OPTIONS.get(i).copied()))
+        });
+        let mut sleep_label = widget::column::with_capacity(2)
+            .push(widget::text::body(fl!("sleep-timer")));
+        if let Some((deadline, _)) = self.sleep_timer {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            sleep_label = sleep_label.push(
+                widget::text::caption(fl!(
+                    "sleep-timer-remaining",
+                    minutes = left.as_secs().div_ceil(60)
+                ))
+                .class(cosmic::theme::Text::Color(pal.ink_dim)),
+            );
+        }
+        let sleep_row = widget::row::with_capacity(3)
+            .spacing(12)
+            .align_y(Vertical::Center)
+            .push(tinted_icon("weather-clear-night-symbolic", 18, pal.ink))
+            .push(sleep_label.width(Length::Fill))
+            .push(sleep_dropdown);
+        content = content.push(
+            widget::container(sleep_row)
+                .padding([7, 10])
+                .width(Length::Fill)
+                .class(pill_class(
+                    pal.pill,
+                    pal.ink,
+                    radii.radius_s[0],
+                    self.sleep_timer.is_some().then_some(pal.accent),
+                )),
+        );
+
         // Default text and icon colors for anything not styled above (the
         // picker's label and chevron, the switch's label).
         let content = widget::container(content).class(pill_class(
@@ -1591,6 +1643,10 @@ pub enum Message {
     CycleRepeat,
     /// Bring the active player's window forward and close the popup.
     RaisePlayer,
+    /// Start the sleep timer for this many minutes, or turn it off (`None`).
+    SetSleepTimer(Option<u32>),
+    /// The sleep timer ran out.
+    SleepTimerFired,
     /// Jump forward (positive) or back (negative) by this many seconds.
     SeekBy(i64),
     /// Move the active player to the next playback speed.
@@ -1642,6 +1698,27 @@ fn armed_watch_stream(key: &(String, String)) -> impl cosmic::iced::futures::Str
         // Idle until the subscription is dropped, so the watcher doesn't restart
         // and immediately re-fire against the now-current track.
         std::future::pending::<()>().await;
+    })
+}
+
+/// Helper: the sleep timer. Fires once at `deadline`, and wakes every
+/// [`SLEEP_TIMER_REDRAW_SECS`] before then purely to redraw the countdown.
+fn sleep_timer_stream(
+    deadline: &std::time::Instant,
+) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    let deadline = *deadline;
+    cosmic::iced::stream::channel(1, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                _ = channel.send(Message::SleepTimerFired).await;
+                // Idle until the subscription is dropped (the timer is now off).
+                std::future::pending::<()>().await;
+            }
+            let step = (deadline - now).min(std::time::Duration::from_secs(SLEEP_TIMER_REDRAW_SECS));
+            tokio::time::sleep(step).await;
+            _ = channel.send(Message::Ignore).await;
+        }
     })
 }
 
@@ -1937,6 +2014,13 @@ impl cosmic::Application for NowPlaying {
             {
                 subs.push(Subscription::run_with((bus, armed), armed_watch_stream));
             }
+        }
+
+        // 3a'. Sleep timer — sleeps until it's due, waking periodically so the
+        // popup's countdown stays current. Keyed on the deadline, so changing
+        // the timer restarts it and turning it off drops it.
+        if let Some((deadline, _)) = self.sleep_timer {
+            subs.push(Subscription::run_with(deadline, sleep_timer_stream));
         }
 
         // 3b. Progress-bar smoothing — only while the media popup is open and a
@@ -2626,6 +2710,33 @@ impl cosmic::Application for NowPlaying {
                     self.shuffle = Some(!on);
                     return self.command_active(mpris::MprisCommand::SetShuffle(!on));
                 }
+            }
+            Message::SetSleepTimer(minutes) => {
+                crate::debug_log!(crate::debug::UI, "sleep timer → {minutes:?} min");
+                self.sleep_timer = minutes.map(|m| {
+                    (
+                        std::time::Instant::now() + std::time::Duration::from_secs(u64::from(m) * 60),
+                        m,
+                    )
+                });
+            }
+            Message::SleepTimerFired => {
+                self.sleep_timer = None;
+                // Pause everything that's playing, not just the player on
+                // show: the point is silence.
+                let tasks: Vec<_> = self
+                    .players
+                    .iter()
+                    .filter(|p| p.playback_status == "Playing")
+                    .map(|p| {
+                        Task::perform(
+                            mpris::send_command(p.bus_name.clone(), mpris::MprisCommand::Pause),
+                            |_| cosmic::Action::App(Message::Ignore),
+                        )
+                    })
+                    .collect();
+                crate::debug_log!(crate::debug::UI, "sleep timer fired → pausing {} player(s)", tasks.len());
+                return Task::batch(tasks);
             }
             Message::SeekBy(seconds) => {
                 let offset_us = seconds * 1_000_000;

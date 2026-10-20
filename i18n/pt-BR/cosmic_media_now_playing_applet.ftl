@@ -42,3 +42,6 @@ players-hint = Desative um reprodutor para ocultá-lo do painel e da lista de re
 seek-seconds = { $seconds } s
 playback-rate = { $rate }×
 decimal-separator = ,
+sleep-timer = Timer de desligamento
+sleep-timer-option = { $minutes } min
+sleep-timer-remaining = Pausa em { $minutes } min

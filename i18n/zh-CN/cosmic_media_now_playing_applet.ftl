@@ -42,3 +42,6 @@ players-hint = 关闭某个播放器即可在面板和播放器列表中隐藏�
 seek-seconds = { $seconds } 秒
 playback-rate = { $rate }×
 decimal-separator = .
+sleep-timer = 睡眠定时器
+sleep-timer-option = { $minutes } 分钟
+sleep-timer-remaining = { $minutes } 分钟后暂停
