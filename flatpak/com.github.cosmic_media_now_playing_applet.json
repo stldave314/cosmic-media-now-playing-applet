@@ -32,7 +32,7 @@
         {
           "type": "git",
           "url": "https://github.com/stldave314/cosmic-media-now-playing-applet.git",
-          "tag": "v0.14.0"
+          "tag": "v0.26.0"
         },
         "cargo-sources.json"
       ]
