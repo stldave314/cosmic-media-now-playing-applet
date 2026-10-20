@@ -139,6 +139,8 @@ pub struct NowPlaying {
     shuffle: Option<bool>,
     /// The active player's repeat mode, when it supports repeat.
     loop_status: Option<mpris::LoopStatus>,
+    /// Whether the active player can bring its own window forward.
+    can_raise: bool,
     /// Wheel movement not yet turned into whole steps. Touchpads and
     /// high-resolution wheels report fractions of a notch.
     scroll_steps: f32,
@@ -215,6 +217,7 @@ impl Default for NowPlaying {
             can_control: true,
             shuffle: None,
             loop_status: None,
+            can_raise: false,
             scroll_steps: 0.0,
             last_scroll_skip: None,
             panel_notice: None,
@@ -602,6 +605,7 @@ impl NowPlaying {
         self.can_control = player.is_none_or(|p| p.can_control);
         self.shuffle = player.and_then(|p| p.shuffle);
         self.loop_status = player.and_then(|p| p.loop_status);
+        self.can_raise = player.is_some_and(|p| p.can_raise);
     }
 
     /// Send `command` to the active player, if there is one.
@@ -829,6 +833,18 @@ impl NowPlaying {
                     .width(Length::Fill),
             );
         }
+        // Clicking the title and artist brings the player's own window
+        // forward, for players that can do that.
+        let details: Element<'_, Message> = if self.can_raise {
+            widget::button::custom(details)
+                .padding(0)
+                .width(Length::Fill)
+                .on_press(Message::RaisePlayer)
+                .class(cosmic::theme::Button::Text)
+                .into()
+        } else {
+            details.into()
+        };
 
         // ── Seek bar — only shown when the player reports a known duration ──
         let progress_bar: Option<Element<'_, Message>> = if self.length_us > 0 {
@@ -1400,6 +1416,8 @@ pub enum Message {
     ToggleShuffle,
     /// Move the active player to its next repeat mode.
     CycleRepeat,
+    /// Bring the active player's window forward and close the popup.
+    RaisePlayer,
 }
 
 /// Helper: creates the MPRIS refresh stream. It re-reads the players whenever
@@ -2405,6 +2423,15 @@ impl cosmic::Application for NowPlaying {
                     self.shuffle = Some(!on);
                     return self.command_active(mpris::MprisCommand::SetShuffle(!on));
                 }
+            }
+            Message::RaisePlayer => {
+                crate::debug_log!(crate::debug::UI, "raise player window");
+                let raise = self.command_active(mpris::MprisCommand::Raise);
+                // Get out of the way of the window being brought forward.
+                return match self.popup.take() {
+                    Some(popup) => Task::batch([raise, destroy_popup(popup)]),
+                    None => raise,
+                };
             }
             Message::CycleRepeat => {
                 if let Some(status) = self.loop_status {

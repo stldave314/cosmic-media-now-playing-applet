@@ -263,6 +263,8 @@ pub enum MprisCommand {
     SetShuffle(bool),
     /// Set the repeat mode.
     SetLoopStatus(LoopStatus),
+    /// Ask the player to bring its own window to the front (MPRIS `Raise`).
+    Raise,
 }
 
 /// The upcoming queued track, if the player implements the optional
@@ -297,6 +299,9 @@ pub struct PlayerInfo {
     pub shuffle: Option<bool>,
     /// The repeat mode, for players that support it.
     pub loop_status: Option<LoopStatus>,
+    /// Whether the player can bring its own window to the front (MPRIS
+    /// `CanRaise`). Background services and browser tabs often can't.
+    pub can_raise: bool,
 }
 
 /// Pull the four identity fields (track id, url, title, artist) out of an MPRIS
@@ -657,6 +662,7 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             .filter(|identity| !identity.is_empty())
             .unwrap_or_else(|| crate::fl!("unknown-player"));
         let has_track_list = prop::<bool>(&root, "HasTrackList").unwrap_or(false);
+        let can_raise = prop::<bool>(&root, "CanRaise").unwrap_or(false);
 
         let metadata = if let Some(metadata_map) =
             prop::<HashMap<String, zbus::zvariant::OwnedValue>>(&props, "Metadata")
@@ -779,6 +785,7 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             can_control,
             shuffle,
             loop_status,
+            can_raise,
         });
     }
 
@@ -860,6 +867,13 @@ pub async fn wait_for_change(signals: &mut Option<ChangeSignals>, timeout: std::
 /// Sends a command to a specific MPRIS media player.
 pub async fn send_command(bus_name: String, command: MprisCommand) {
     let Some(connection) = session_bus().await else { return };
+    // Raise belongs to the root interface; everything else to the player.
+    if matches!(command, MprisCommand::Raise) {
+        if let Some(root) = interface_proxy(connection, &bus_name, ROOT_INTERFACE).await {
+            let _ = root.call_method("Raise", &()).await;
+        }
+        return;
+    }
     let Some(player_proxy) = interface_proxy(connection, &bus_name, PLAYER_INTERFACE).await else {
         return;
     };
@@ -884,6 +898,7 @@ pub async fn send_command(bus_name: String, command: MprisCommand) {
         MprisCommand::SetLoopStatus(status) => {
             let _ = player_proxy.set_property("LoopStatus", status.as_str()).await;
         }
+        MprisCommand::Raise => {}
     }
 }
 

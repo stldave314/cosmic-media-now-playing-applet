@@ -95,6 +95,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | ⏸️ **Pause before next track** | Arm a one-shot stop: the current track finishes, then playback halts before the next one starts. Ideal for ending a session on the track you're on |
 | ⏭️ **Next-track preview** | Shows the upcoming queued track for players that expose the MPRIS `TrackList` interface |
 | 🌫️ **Album-art backdrop** | The popup is drawn over a blurred copy of the cover, with a gradient that keeps text and controls readable on any image |
+| 🪟 **Jump to the player** | Click the title in the popup to bring the player's own window forward (MPRIS `Raise`), for players that support it |
 | 🔗 **Click art to open source** | Clicking the popup album art opens the track's URL (e.g. the YouTube tab) in your browser — `http(s)` links only |
 | 🎛️ **Player selector** | Choose which player to control when several are active |
 | 🔄 **Auto-switching** | Automatically follows whichever player starts playing |
@@ -416,6 +417,8 @@ Stored via `cosmic-config` at:
 **"Pause before playing next track" is grayed out.** The player is reporting no next track (`CanGoNext = false`) — common for a single stream or the last item in a queue.
 
 **It still plays a moment of the next track.** The pre-emptive stop relies on the player reporting a usable `Position` and `mpris:length`. When either is missing or stale — live streams, and some browser-hosted players — prediction isn't possible, and the applet falls back to reacting to the track change, which inherently lands slightly late. It then rewinds the new track to 0:00 so play resumes from its start.
+
+**Clicking the title doesn't bring the player forward.** The title is only clickable when the player says it can raise its window (MPRIS `CanRaise`); many background services and some browsers don't. When it is clickable, Wayland leaves the final say to the compositor, which may highlight the window instead of switching to it, depending on how the player asks.
 
 **"Next: …" never appears.** It needs the optional MPRIS `TrackList` interface, which most players — including browsers and Spotify — don't implement. VLC is one that does. Check with `busctl --user introspect <player-bus> /org/mpris/MediaPlayer2 | grep TrackList`.
 
