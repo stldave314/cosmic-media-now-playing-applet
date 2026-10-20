@@ -103,7 +103,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | 🎛️ **Player selector** | Choose which player to control when several are active |
 | 🔄 **Auto-switching** | Automatically follows whichever player starts playing — or turn it off and the applet stays on the player you picked |
 | 🙈 **Hide players** | Switch off any player (a video call, a muted autoplay tab, a notification sound) so it never takes over the panel or appears in the player list; remembered across restarts and new browser instances |
-| 📜 **Marquee scrolling** | Long titles scroll with adjustable speed — or set it to **Off** for a static title |
+| 📜 **Marquee scrolling** | Long titles glide smoothly pixel by pixel and hold still while the pointer rests on them; adjustable speed, or **Off** for a static title |
 | 📏 **Width, margins & spacing** | Widget width (100–500 px), top/left/right margins, and the icon-to-title gap |
 | 🎨 **Display formats** | Title Only, Artist — Title, Title — Artist, or your own template using `{title}`, `{artist}`, and `{album}` — fields a player leaves out are tidied away |
 | 💿 **Album name** | Shown under the artist in the popup when the player publishes it |
@@ -314,7 +314,7 @@ The bottom row of the popup is a **sleep timer**. Pick a length from its menu an
 | **Top Margin** | -10 – 20 px | 0 px | Shifts content vertically |
 | **Left Margin** | 0 – 40 px | 5 px | Padding before the icon/content |
 | **Right Margin** | 0 – 40 px | 0 px | Padding after the content |
-| **Scroll Speed** | Off, 1 – 10 | 5 | 1 ≈ 300 ms/step, 10 ≈ 30 ms/step. **Off** keeps the visible portion static until the track changes |
+| **Scroll Speed** | Off, 1 – 10 | 5 | About 27 px/s at 1, 44 px/s at 5, and 270 px/s at 10. **Off** keeps the start of the title static until the track changes |
 | **Display Format** | Title Only · Artist — Title · Title — Artist · Custom | Artist — Title | Falls back to title alone when the player reports no artist. **Custom** shows a template field (default `{artist} — {title} ({album})`); everything other than the three placeholders is kept as typed, and a field the player leaves out takes its empty brackets and dangling separator with it. The template is saved once you pause typing |
 | **Panel Icon** | Album Art · Music Note · No Icon | Album Art | Album Art falls back to a music note when no art is available |
 | **Album Art Size** | 12 – 48 px | 16 px | Size of the panel thumbnail (and music-note fallback) |
@@ -372,7 +372,7 @@ Stored via `cosmic-config` at:
 
   Background subscriptions:
     MPRIS Refresh     ─→ D-Bus change signals (1 s timer only while the popup is open)
-    Scroll Timer      ─→ marquee animation (skipped when Off / text fits)
+    Marquee Frames    ─→ title animation (only while it overflows, scrolling is on, and not hovered)
     Config Watcher    ─→ cosmic-config
     Pointer Events    ─→ panel hover detection
     Progress Ticker   ─→ smooth seek bar (only while popup open + playing)
@@ -414,7 +414,7 @@ Stored via `cosmic-config` at:
 - **Hover, wheel, and middle-click detection** — because the applet surface is autosized to exactly the widget, the pointer leaves the *surface* rather than crossing widget bounds, which a `mouse_area`'s hover state doesn't track reliably, and its wheel handler reports every notch twice. All three are instead read from a raw pointer-event subscription (`CursorMoved` / `CursorLeft`, `WheelScrolled`, middle `ButtonPressed`) filtered to the applet's own surface. The whole widget is one button (so any click opens the popup) while nested control buttons capture their own clicks.
 - **Auto-switching** — detects a player transitioning from paused to playing and switches focus to it, unless switched off. Hidden players are dropped from every refresh before anything else looks at them, so they can't win the switch, appear in the picker, or trip the pause-before-next-track watcher.
 - **Debounced panel resizing** — width changes commit only after 1.5 s of inactivity, sending a single clean resize request instead of many rapid ones that could overlap applets.
-- **Marquee scrolling** — character-offset windowing over a looping buffer; the scroll subscription is disabled entirely when the text fits or scrolling is Off.
+- **Marquee scrolling** — a small custom widget lays the title out at its natural width (ordinary containers clamp a child to the space available), then draws the title, the gap, and the title again shifted left by a pixel offset inside a clipping layer. It measures the real text, so a title that fits is drawn once and still. The offset advances by the time actually elapsed, and the frame rate follows the speed, so each frame moves about two pixels: roughly 22 frames a second at the default speed and never more than 30. Frames run only while the title overflows, scrolling is on, and the pointer isn't resting on it; at the default speed that costs about 4% of one core while it moves.
 
 ---
 

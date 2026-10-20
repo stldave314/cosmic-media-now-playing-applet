@@ -6,6 +6,7 @@ mod config;
 mod constants;
 mod debug;
 mod i18n;
+mod marquee;
 mod mpris;
 
 fn main() -> cosmic::iced::Result {

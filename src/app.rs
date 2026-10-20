@@ -10,7 +10,8 @@ use crate::constants::{
     PANEL_PROGRESS_TICK_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
     SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, SETTINGS_MAX_HEIGHT, SLEEP_TIMER_OPTIONS,
     SLEEP_TIMER_REDRAW_SECS, VOLUME_STEP,
-    SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
+    SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, MARQUEE_MAX_FRAME_MS,
+    MARQUEE_MIN_FRAME_MS, MARQUEE_STEP_PX,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
 use crate::backdrop;
@@ -61,7 +62,10 @@ pub struct NowPlaying {
     /// The fully-formatted display string (formatted from title + artist).
     display_text: String,
     /// Current scroll offset in characters for the marquee effect.
-    scroll_offset: usize,
+    marquee_offset: f32,
+    /// When the marquee last advanced, to move it by the time actually
+    /// elapsed. `None` until the first frame after (re)starting.
+    marquee_last_frame: Option<std::time::Instant>,
     /// Whether any media player is currently active.
     has_player: bool,
     /// Currently active popup view.
@@ -211,7 +215,8 @@ impl Default for NowPlaying {
             format_settle_gen: 0,
             format_pending: false,
             display_text: String::new(),
-            scroll_offset: 0,
+            marquee_offset: 0.0,
+            marquee_last_frame: None,
             has_player: false,
             popup_state: PopupState::default(),
             art_url: None,
@@ -283,6 +288,14 @@ fn http_client() -> Option<&'static reqwest::Client> {
                 .ok()
         })
         .as_ref()
+}
+
+/// Whether `c` takes about two columns: CJK ideographs, kana, Hangul, and
+/// full-width forms. Only feeds [`NowPlaying::estimated_width`].
+fn is_wide(c: char) -> bool {
+    matches!(u32::from(c),
+        0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)
 }
 
 /// A settings entry whose label sits tightly above a full-width slider.
@@ -600,7 +613,7 @@ impl NowPlaying {
             );
         }
         // Reset scroll when the text changes.
-        self.scroll_offset = 0;
+        self.marquee_offset = 0.0;
     }
 
     /// Pixels available for content beside the leading icon, after subtracting
@@ -617,10 +630,12 @@ impl NowPlaying {
         (self.config.widget_width as f32 - icon_area - margins).max(0.0)
     }
 
-    /// Maximum number of characters that fit in the panel text area, accounting
-    /// for the leading icon's footprint and horizontal margins when shown.
-    fn max_visible_chars(&self) -> usize {
-        (self.available_panel_width() / APPROX_CHAR_WIDTH) as usize
+    /// A generous estimate of `text`'s width on the panel. Only used to decide
+    /// whether to run the marquee timer; the marquee measures the real thing.
+    fn estimated_width(text: &str) -> f32 {
+        text.chars()
+            .map(|c| if is_wide(c) { 2.0 * APPROX_CHAR_WIDTH } else { APPROX_CHAR_WIDTH })
+            .sum()
     }
 
     /// Whether hover controls should be shown right now: enabled in config, an
@@ -637,7 +652,8 @@ impl NowPlaying {
         self.stopped_at_key.is_some()
     }
 
-    /// Returns the visible portion of the display text for the marquee effect.
+    /// The panel strip's text: the display text, a short notice in its place,
+    /// or nothing while stopped.
     fn visible_text(&self) -> String {
         if self.is_stopped() {
             return String::new();
@@ -645,32 +661,39 @@ impl NowPlaying {
         if let Some(notice) = &self.panel_notice {
             return notice.clone();
         }
-
-        let max_chars = self.max_visible_chars();
-
-        if self.display_text.chars().count() <= max_chars {
-            // Text fits — no scrolling needed.
-            return self.display_text.clone();
-        }
-
-        // Build a looping buffer: "text    ·    text    ·    "
-        let looping = format!("{}{}{}", self.display_text, SCROLL_GAP, self.display_text);
-        let total_chars: usize = self.display_text.chars().count() + SCROLL_GAP.chars().count();
-        let offset = self.scroll_offset % total_chars;
-
-        // Hand over more than the estimate suggests and let the container's clip
-        // trim it at the true pixel edge, so the title fills the whole width.
-        looping
-            .chars()
-            .skip(offset)
-            .take(max_chars + TEXT_OVERDRAW_CHARS)
-            .collect()
+        self.display_text.clone()
     }
 
-    /// Whether the text overflows and needs scrolling. False while stopped, so
-    /// the scroll timer subscription shuts off with nothing to move.
+    /// Whether the title probably overflows and needs scrolling. False while
+    /// stopped or showing a notice, so the frame timer shuts off with nothing
+    /// to move.
     fn needs_scroll(&self) -> bool {
-        !self.is_stopped() && self.display_text.chars().count() > self.max_visible_chars()
+        !self.is_stopped()
+            && self.panel_notice.is_none()
+            && Self::estimated_width(&self.display_text) > self.available_panel_width()
+    }
+
+    /// Whether the marquee should be animating right now: the title overflows,
+    /// scrolling is on, and the pointer isn't resting on the applet — hovering
+    /// holds it still, so a long title can be read (or the hover controls used)
+    /// without it sliding away.
+    fn marquee_running(&self) -> bool {
+        self.needs_scroll() && self.config.scroll_speed > 0 && !self.panel_hovered
+    }
+
+    /// Marquee frame interval: enough frames to move about
+    /// [`MARQUEE_STEP_PX`] each, within the frame-rate bounds.
+    fn marquee_frame_ms(&self) -> u64 {
+        ((MARQUEE_STEP_PX * 1000.0 / self.marquee_speed()) as u64)
+            .clamp(MARQUEE_MIN_FRAME_MS, MARQUEE_MAX_FRAME_MS)
+    }
+
+    /// Marquee speed in pixels per second for the configured speed level.
+    fn marquee_speed(&self) -> f32 {
+        let tick_ms = SCROLL_TICK_BASE_MS
+            .saturating_sub(u64::from(self.config.scroll_speed) * SCROLL_TICK_STEP_MS)
+            .max(SCROLL_TICK_MIN_MS);
+        APPROX_CHAR_WIDTH * 1000.0 / tick_ms as f32
     }
 
     /// Persist the current config to disk via cosmic-config.
@@ -1677,8 +1700,8 @@ pub enum Message {
     /// The armed watcher detected the track change and already paused the
     /// player; clear the one-shot arm.
     ArmedPauseFired,
-    /// Scroll timer tick — advance the marquee offset.
-    ScrollTick,
+    /// Marquee frame — advance the scrolling title by the time since the last.
+    MarqueeFrame,
     /// User changed the widget width via the slider (live, while dragging).
     SetWidth(f32),
     /// Fired after the width slider settles; commits the width to config.
@@ -1843,17 +1866,14 @@ fn progress_timer_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item 
     })
 }
 
-/// Helper: creates the scroll timer stream based on the scroll speed level (1-10).
-fn scroll_timer_stream(speed: &u32) -> impl cosmic::iced::futures::Stream<Item = Message> {
-    // level 1 = 300 ms/tick (slowest), level 10 = 30 ms/tick (fastest)
-    let tick_ms = SCROLL_TICK_BASE_MS
-        .saturating_sub(*speed as u64 * SCROLL_TICK_STEP_MS)
-        .max(SCROLL_TICK_MIN_MS);
-    cosmic::iced::stream::channel(4, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
-        let tick_duration = std::time::Duration::from_millis(tick_ms);
+/// Helper: the marquee's frame clock, keyed on its interval. The distance
+/// moved is computed per frame in `update` from the time actually elapsed.
+fn marquee_frame_stream(frame_ms: &u64) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    let frame = std::time::Duration::from_millis(*frame_ms);
+    cosmic::iced::stream::channel(1, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
         loop {
-            tokio::time::sleep(tick_duration).await;
-            _ = channel.send(Message::ScrollTick).await;
+            tokio::time::sleep(frame).await;
+            _ = channel.send(Message::MarqueeFrame).await;
         }
     })
 }
@@ -2053,9 +2073,16 @@ impl cosmic::Application for NowPlaying {
                 .align_y(Vertical::Center)
                 .into()
         } else {
-            // Default: leading icon + scrolling track text.
-            let text = widget::text::body(self.visible_text())
-                .wrapping(cosmic::iced::widget::text::Wrapping::None);
+            // Default: leading icon + scrolling track text. A notice or a
+            // stopped applet is plain text; the title goes through the marquee,
+            // which draws it still when it fits.
+            let text: Element<'_, Message> = if self.panel_notice.is_some() || self.is_stopped() {
+                widget::text::body(self.visible_text())
+                    .wrapping(cosmic::iced::widget::text::Wrapping::None)
+                    .into()
+            } else {
+                crate::marquee::marquee(&self.display_text, SCROLL_GAP, self.marquee_offset).into()
+            };
 
             let mut row = widget::row::with_capacity(2);
             if let Some(leading) = leading {
@@ -2167,8 +2194,8 @@ impl cosmic::Application for NowPlaying {
 
         // 3. Scroll timer — only active when the text overflows and scrolling
         // isn't disabled (speed 0 keeps the visible portion static).
-        if self.needs_scroll() && self.config.scroll_speed > 0 {
-            subs.push(Subscription::run_with(self.config.scroll_speed, scroll_timer_stream));
+        if self.marquee_running() {
+            subs.push(Subscription::run_with(self.marquee_frame_ms(), marquee_frame_stream));
         }
 
         // 3a. Armed watcher — polls just the armed player's metadata rapidly so
@@ -2217,7 +2244,8 @@ impl cosmic::Application for NowPlaying {
         // The window id lets `update` ignore anything over the popup.
         let wants_hover = self.config.show_hover_controls && self.config.panel_icon != PanelIcon::None;
         let wants_wheel = self.config.scroll_action != ScrollAction::Nothing;
-        if wants_hover || wants_wheel || self.config.middle_click_play_pause {
+        // Hover is also what holds a scrolling title still.
+        if wants_hover || wants_wheel || self.config.middle_click_play_pause || self.needs_scroll() {
             subs.push(cosmic::iced::event::listen_with(|event, _status, window| {
                 use cosmic::iced::mouse::{Button, Event as Mouse};
                 match event {
@@ -2588,12 +2616,15 @@ impl cosmic::Application for NowPlaying {
                 }
             }
             Message::Ignore => {}
-            Message::ScrollTick => {
-                if self.needs_scroll() {
-                    let total_chars =
-                        self.display_text.chars().count() + SCROLL_GAP.chars().count();
-                    self.scroll_offset = (self.scroll_offset + 1) % total_chars;
+            Message::MarqueeFrame => {
+                let now = std::time::Instant::now();
+                if let Some(last) = self.marquee_last_frame.filter(|_| self.marquee_running()) {
+                    // Capped, so resuming after a pause (hover, a notice)
+                    // doesn't leap ahead by the time spent paused.
+                    let dt = now.duration_since(last).as_secs_f32().min(0.1);
+                    self.marquee_offset += self.marquee_speed() * dt;
                 }
+                self.marquee_last_frame = Some(now);
             }
             Message::SetWidth(w) => {
                 self.slider_width = w as u32;
@@ -2611,7 +2642,7 @@ impl cosmic::Application for NowPlaying {
                 if gen == self.width_settle_gen {
                     self.config.widget_width = self.slider_width;
                     self.save_config();
-                    self.scroll_offset = 0;
+                    self.marquee_offset = 0.0;
                 }
             }
             Message::SetScrollSpeed(level) => {
@@ -2619,7 +2650,7 @@ impl cosmic::Application for NowPlaying {
                 // When scrolling is turned off, snap back to the start so the
                 // static view shows the beginning of the title.
                 if self.config.scroll_speed == 0 {
-                    self.scroll_offset = 0;
+                    self.marquee_offset = 0.0;
                 }
                 self.save_config();
             }
@@ -2635,30 +2666,30 @@ impl cosmic::Application for NowPlaying {
             Message::SetLeftMargin(m) => {
                 self.config.left_margin = m as i32;
                 // Horizontal margins reduce the text area, so re-evaluate scrolling.
-                self.scroll_offset = 0;
+                self.marquee_offset = 0.0;
                 self.save_config();
             }
             Message::SetRightMargin(m) => {
                 self.config.right_margin = m as i32;
-                self.scroll_offset = 0;
+                self.marquee_offset = 0.0;
                 self.save_config();
             }
             Message::SetPanelIcon(icon) => {
                 self.config.panel_icon = icon;
                 // Width available for text changes when the icon is toggled off/on.
-                self.scroll_offset = 0;
+                self.marquee_offset = 0.0;
                 self.save_config();
             }
             Message::SetPanelArtSize(size) => {
                 self.config.panel_art_size = size as u32;
                 // The art footprint affects the available text width.
-                self.scroll_offset = 0;
+                self.marquee_offset = 0.0;
                 self.save_config();
             }
             Message::SetIconSpacing(gap) => {
                 self.config.icon_spacing = gap as u32;
                 // The gap affects the available text width.
-                self.scroll_offset = 0;
+                self.marquee_offset = 0.0;
                 self.save_config();
             }
             Message::SetIdleClear(minutes) => {

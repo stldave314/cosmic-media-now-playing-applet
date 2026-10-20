@@ -13,21 +13,14 @@
 /// The separator inserted between repetitions of scrolling text.
 pub const SCROLL_GAP: &str = "    ·    ";
 
-/// Approximate character width in pixels, used only to decide *whether* the
-/// title overflows and needs scrolling. Deliberately on the generous side:
-/// over-estimating makes the applet scroll a title that might just have fitted,
-/// which is far less bad than not scrolling one that doesn't fit and silently
-/// hiding its end.
+/// Approximate character width in pixels (doubled for wide CJK characters).
+/// The marquee itself measures the real text; this only decides whether to
+/// run the animation timer at all, and sets the scroll speed's units.
+/// Deliberately generous: an over-estimate only costs timer ticks for a
+/// title the marquee then draws still, while an under-estimate would leave a
+/// long title frozen with its end hidden.
 pub const APPROX_CHAR_WIDTH: f32 = 8.0;
 
-/// Extra characters handed to the panel text beyond the estimated fit.
-///
-/// The text container clips at its real pixel boundary, so supplying surplus
-/// characters lets it fill the full width exactly and the estimate above only
-/// has to be in the right ballpark. Without this the title stops wherever the
-/// estimate under-counts — which it always does for a proportional font —
-/// leaving visible dead space before the edge of the applet.
-pub const TEXT_OVERDRAW_CHARS: usize = 16;
 
 /// Size in pixels of the music-note fallback icon in the panel.
 pub const MUSIC_NOTE_SIZE: f32 = 16.0;
@@ -160,6 +153,19 @@ pub const MAX_ART_DIMENSION: u32 = 4096;
 
 // ── Timing ──────────────────────────────────────────────────────────────────
 
+/// How far the scrolling title moves per frame, in logical pixels. The frame
+/// rate follows from the speed: slow speeds need fewer frames to look just as
+/// smooth, so they wake the applet less often. At the default speed this is
+/// about 22 frames a second.
+pub const MARQUEE_STEP_PX: f32 = 2.0;
+
+/// Frame-interval bounds for the scrolling title, in milliseconds: never
+/// faster than about 30 frames a second, never slower than 10. Frames run only
+/// while a title is actually overflowing, scrolling is on, and the pointer
+/// isn't resting on it.
+pub const MARQUEE_MIN_FRAME_MS: u64 = 33;
+pub const MARQUEE_MAX_FRAME_MS: u64 = 100;
+
 /// How often the applet re-reads every player while the media popup is open,
 /// so the seek bar and times stay in step with what the player reports.
 pub const MPRIS_POLL_INTERVAL_MS: u64 = 1_000;
@@ -183,8 +189,10 @@ pub const PROGRESS_TICK_MS: u64 = 100;
 /// the panel is resized, so dragging doesn't spam resize requests.
 pub const WIDTH_SETTLE_MS: u64 = 1_500;
 
-/// Scroll timer bounds: tick interval = `SCROLL_TICK_BASE_MS - level * SCROLL_TICK_STEP_MS`,
-/// clamped to at least `SCROLL_TICK_MIN_MS`, for speed levels 1–10.
+/// Marquee speed: speed level `n` (1–10) moves one [`APPROX_CHAR_WIDTH`] every
+/// `SCROLL_TICK_BASE_MS - n * SCROLL_TICK_STEP_MS` milliseconds, at least
+/// `SCROLL_TICK_MIN_MS` — the pace of the old one-character-per-tick marquee,
+/// now spread smoothly over every frame.
 pub const SCROLL_TICK_BASE_MS: u64 = 330;
 pub const SCROLL_TICK_STEP_MS: u64 = 30;
 pub const SCROLL_TICK_MIN_MS: u64 = 30;
