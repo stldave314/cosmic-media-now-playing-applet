@@ -71,7 +71,7 @@ Hover over the applet on the panel for **inline controls** (previous / play-paus
   <img src="resources/screenshot-hover.png" alt="The applet on the COSMIC panel with its hover controls: the album art thumbnail, then previous, pause, next, and stop" width="820">
 </p>
 
-The **settings view**, reached via the gear icon, keeps every option on one compact screen:
+The **settings view**, reached via the gear icon, keeps every option on one compact, scrolling screen:
 
 <p align="center">
   <img src="resources/screenshot-settings.png" alt="Settings view: widget width, top/left/right margins, scroll speed, display format, panel icon, album art size, icon spacing, clear title when idle, hover controls toggle, and the version and update-check row" width="420">
@@ -98,7 +98,8 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | 🪟 **Jump to the player** | Click the title in the popup to bring the player's own window forward (MPRIS `Raise`), for players that support it |
 | 🔗 **Click art to open source** | Clicking the popup album art opens the track's URL (e.g. the YouTube tab) in your browser — `http(s)` links only |
 | 🎛️ **Player selector** | Choose which player to control when several are active |
-| 🔄 **Auto-switching** | Automatically follows whichever player starts playing |
+| 🔄 **Auto-switching** | Automatically follows whichever player starts playing — or turn it off and the applet stays on the player you picked |
+| 🙈 **Hide players** | Switch off any player (a video call, a muted autoplay tab, a notification sound) so it never takes over the panel or appears in the player list; remembered across restarts and new browser instances |
 | 📜 **Marquee scrolling** | Long titles scroll with adjustable speed — or set it to **Off** for a static title |
 | 📏 **Width, margins & spacing** | Widget width (100–500 px), top/left/right margins, and the icon-to-title gap |
 | 🎨 **Display formats** | Title Only, Artist — Title, or Title — Artist |
@@ -312,6 +313,8 @@ Below the playback controls is a switch that arms a **one-shot stop**: the curre
 | **Show Controls on Hover** | On / Off | On | Requires a Panel Icon other than "No Icon"; prev/next appear only when supported and there's room |
 | **Scroll Wheel** | Change Volume · Skip Tracks · Off | Change Volume | Wheel up raises the player's own volume by 5% per notch and shows the new level on the panel briefly; in Skip Tracks, wheel down goes to the next track and up to the previous one, one track per flick. Works only with players that report a volume and accept control |
 | **Middle-Click to Play/Pause** | On / Off | On | |
+| **Follow the Player That Starts Playing** | On / Off | On | When off, the applet stays on the player chosen in the popup until that player goes away |
+| **Players** (one switch each) | On / Off | On | Lists every player seen since login, plus hidden ones. Off hides that player completely. Players are remembered by the stable part of their bus name, so `firefox` stays hidden across Firefox instances |
 | **Clear Title When Idle** | Off, 1 – 60 min | **Off** | Stops the applet once playback has been idle this long — same result as pressing STOP: title and art clear, and the panel space is given back. Playing again or changing track brings it back |
 
 ### Config File Location
@@ -398,7 +401,7 @@ Stored via `cosmic-config` at:
 - **Constants vs. settings** — values a user should control live in `config.rs` (persisted via `cosmic-config`, with UI and validation); internal tuning values live in `constants.rs` as compile-time constants. Package metadata such as the update URL and user agent is derived from `Cargo.toml` via `env!("CARGO_PKG_*")` so it has a single source of truth.
 - **Diagnostic logging** — `debug.rs` writes categorized diagnostics to a file rather than stderr, since an applet's stderr is piped to `cosmic-panel` and ends up on the session TTY. It's gated on a compile-time constant, so when disabled the `debug_log!` macro's body is dead code and the optimizer removes it entirely — no formatting, no I/O, and the log path doesn't even appear in the binary. Set `DEVELOPER_LOGGING` in `debug.rs` to enable it while debugging; the packaging targets build with the `release-build` feature, which forces it off so a release can never ship with logging on.
 - **Hover, wheel, and middle-click detection** — because the applet surface is autosized to exactly the widget, the pointer leaves the *surface* rather than crossing widget bounds, which a `mouse_area`'s hover state doesn't track reliably, and its wheel handler reports every notch twice. All three are instead read from a raw pointer-event subscription (`CursorMoved` / `CursorLeft`, `WheelScrolled`, middle `ButtonPressed`) filtered to the applet's own surface. The whole widget is one button (so any click opens the popup) while nested control buttons capture their own clicks.
-- **Auto-switching** — detects a player transitioning from paused to playing and switches focus to it.
+- **Auto-switching** — detects a player transitioning from paused to playing and switches focus to it, unless switched off. Hidden players are dropped from every refresh before anything else looks at them, so they can't win the switch, appear in the picker, or trip the pause-before-next-track watcher.
 - **Debounced panel resizing** — width changes commit only after 1.5 s of inactivity, sending a single clean resize request instead of many rapid ones that could overlap applets.
 - **Marquee scrolling** — character-offset windowing over a looping buffer; the scroll subscription is disabled entirely when the text fits or scrolling is Off.
 

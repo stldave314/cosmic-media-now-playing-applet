@@ -36,3 +36,6 @@ scroll-wheel-volume = Change Volume
 scroll-wheel-skip = Skip Tracks
 middle-click = Middle-Click to Play/Pause
 volume-notice = Volume { $percent }%
+players-heading = Players
+auto-switch = Follow the Player That Starts Playing
+players-hint = Switch a player off to hide it from the panel and the player list.

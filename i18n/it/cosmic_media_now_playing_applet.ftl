@@ -36,3 +36,6 @@ scroll-wheel-volume = Cambia volume
 scroll-wheel-skip = Cambia brano
 middle-click = Clic centrale per riproduci/pausa
 volume-notice = Volume { $percent }%
+players-heading = Lettori
+auto-switch = Segui il lettore che inizia a riprodurre
+players-hint = Disattiva un lettore per nasconderlo dal pannello e dall'elenco dei lettori.

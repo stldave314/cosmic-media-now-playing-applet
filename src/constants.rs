@@ -58,6 +58,12 @@ pub const PANEL_NOTICE_MS: u64 = 1_200;
 /// (see `popup_container`); the backdrop's proportions are derived from it.
 pub const POPUP_WIDTH: f32 = 360.0;
 
+/// Tallest the settings view grows before it scrolls, in logical pixels.
+/// The popup's own height limit doesn't constrain an autosized surface, so
+/// the scroll area carries it; this fits a 768-pixel-high screen with the
+/// panel.
+pub const SETTINGS_MAX_HEIGHT: f32 = 560.0;
+
 /// Edge length in pixels of the album-art card in the media popup.
 pub const POPUP_ART_SIZE: f32 = 220.0;
 

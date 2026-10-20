@@ -6,7 +6,7 @@ use crate::constants::{
     MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_IDLE_POLL_INTERVAL_MS,
     MPRIS_POLL_INTERVAL_MS,
     MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
-    SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, VOLUME_STEP,
+    SCROLL_PIXELS_PER_STEP, SCROLL_SKIP_COOLDOWN_MS, SETTINGS_MAX_HEIGHT, VOLUME_STEP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
 };
@@ -141,6 +141,9 @@ pub struct NowPlaying {
     loop_status: Option<mpris::LoopStatus>,
     /// Whether the active player can bring its own window forward.
     can_raise: bool,
+    /// Every player seen this session as (key, display name), hidden or not,
+    /// in order of first appearance — the settings list of players.
+    known_players: Vec<(String, String)>,
     /// Wheel movement not yet turned into whole steps. Touchpads and
     /// high-resolution wheels report fractions of a notch.
     scroll_steps: f32,
@@ -218,6 +221,7 @@ impl Default for NowPlaying {
             shuffle: None,
             loop_status: None,
             can_raise: false,
+            known_players: Vec::new(),
             scroll_steps: 0.0,
             last_scroll_skip: None,
             panel_notice: None,
@@ -283,19 +287,19 @@ fn labeled_control<'a>(
 /// of the click target too. It reacts on *release*: the toggler publishes on
 /// ButtonReleased and captures it, so clicking the switch itself is handled
 /// once rather than toggling twice. `None` shows it disabled.
-fn labeled_toggle<'a>(
-    label: String,
-    on: bool,
-    on_toggle: Option<fn(bool) -> Message>,
-) -> Element<'a, Message> {
+fn labeled_toggle<'a, F>(label: String, on: bool, on_toggle: Option<F>) -> Element<'a, Message>
+where
+    F: Fn(bool) -> Message + 'a,
+{
+    let release = on_toggle.as_ref().map(|toggle| toggle(!on));
     let row = widget::row::with_capacity(2)
         .spacing(12)
         .align_y(Vertical::Center)
         .push(widget::toggler(on).on_toggle_maybe(on_toggle))
         .push(widget::text::body(label));
-    match on_toggle {
-        Some(toggle) => widget::mouse_area(row)
-            .on_release(toggle(!on))
+    match release {
+        Some(message) => widget::mouse_area(row)
+            .on_release(message)
             .interaction(cosmic::iced::mouse::Interaction::Pointer)
             .into(),
         None => row.into(),
@@ -1273,19 +1277,54 @@ impl NowPlaying {
             Some(Message::SetMiddleClick),
         );
 
+        // Players: whether to follow the one that starts playing, and a switch
+        // per player — every one seen this session plus any hidden ones that
+        // aren't running — to hide it entirely.
+        let mut players_section = widget::column::with_capacity(4)
+            .spacing(8)
+            .push(widget::text::heading(fl!("players-heading")))
+            .push(labeled_toggle(
+                fl!("auto-switch"),
+                self.config.auto_switch,
+                Some(Message::SetAutoSwitch),
+            ));
+        let mut listed = self.known_players.clone();
+        for hidden in &self.config.hidden_players {
+            if !listed.iter().any(|(key, _)| key == &hidden.key) {
+                listed.push((hidden.key.clone(), hidden.name.clone()));
+            }
+        }
+        if !listed.is_empty() {
+            players_section = players_section.push(widget::text::caption(fl!("players-hint")));
+        }
+        for (key, name) in listed {
+            let shown = !self.config.is_hidden(&key);
+            players_section = players_section.push(labeled_toggle(
+                name.clone(),
+                shown,
+                Some(move |show: bool| Message::SetPlayerHidden {
+                    key: key.clone(),
+                    name: name.clone(),
+                    hidden: !show,
+                }),
+            ));
+        }
+
         // Groups keep each label tight against its own slider (2px), while the
         // outer spacing separates the settings from each other — this keeps the
         // popup short enough for smaller screens.
+        // The header stays put above the scrolling settings.
+        let header = widget::row::with_capacity(2)
+            .spacing(12)
+            .padding([12, 12, 4, 12])
+            .push(back_btn)
+            .push(widget::text::title4(fl!("app-title")))
+            .align_y(Vertical::Center);
+
+        // Extra right padding keeps the scrollbar clear of the dropdowns.
         let content = widget::column::with_capacity(14)
             .spacing(8)
-            .padding(12)
-            .push(
-                widget::row::with_capacity(2)
-                    .spacing(12)
-                    .push(back_btn)
-                    .push(widget::text::title4(fl!("app-title")))
-                    .align_y(Vertical::Center)
-            )
+            .padding([8, 20, 12, 12])
             .push(labeled_slider(width_label, width_slider))
             .push(labeled_slider(margin_label, margin_slider))
             .push(labeled_slider(left_margin_label, left_margin_slider))
@@ -1298,7 +1337,9 @@ impl NowPlaying {
             .push(idle_clear_section)
             .push(hover_toggle)
             .push(labeled_control(fl!("scroll-wheel"), scroll_dropdown))
-            .push(middle_click_toggle);
+            .push(middle_click_toggle)
+            .push(widget::divider::horizontal::default())
+            .push(players_section);
 
         // Version and the update button share one line; the result only takes up
         // space once there is something to report.
@@ -1316,10 +1357,15 @@ impl NowPlaying {
             .push(update_row)
             .push_maybe(status_label);
 
-        // Scrolls once the settings outgrow the popup's height limit.
+        // Scrolls once the settings outgrow SETTINGS_MAX_HEIGHT.
         self.core
             .applet
-            .popup_container(widget::scrollable(content).height(Length::Shrink))
+            .popup_container(
+                widget::column::with_capacity(2).push(header).push(
+                    widget::container(widget::scrollable(content).height(Length::Shrink))
+                        .max_height(SETTINGS_MAX_HEIGHT),
+                ),
+            )
             .into()
     }
 }
@@ -1418,6 +1464,11 @@ pub enum Message {
     CycleRepeat,
     /// Bring the active player's window forward and close the popup.
     RaisePlayer,
+    /// User toggled following whichever player starts playing.
+    SetAutoSwitch(bool),
+    /// User hid or showed a player (by key; the name is remembered for the
+    /// settings list while the player isn't running).
+    SetPlayerHidden { key: String, name: String, hidden: bool },
 }
 
 /// Helper: creates the MPRIS refresh stream. It re-reads the players whenever
@@ -1853,7 +1904,18 @@ impl cosmic::Application for NowPlaying {
                     self.popup = None;
                 }
             }
-            Message::MprisUpdate(players) => {
+            Message::MprisUpdate(mut players) => {
+                // Remember every player seen, hidden or not, for the settings
+                // list; then drop the hidden ones before anything else sees them.
+                for p in &players {
+                    let key = mpris::player_key(&p.bus_name);
+                    match self.known_players.iter_mut().find(|(k, _)| k == key) {
+                        Some(entry) => entry.1.clone_from(&p.identity),
+                        None => self.known_players.push((key.to_string(), p.identity.clone())),
+                    }
+                }
+                players.retain(|p| !self.config.is_hidden(mpris::player_key(&p.bus_name)));
+
                 // If the saved selection points to a player that no longer exists, clear it
                 // so it doesn't interfere with auto-selection going forward.
                 if let Some(ref bus) = self.config.selected_player.clone() {
@@ -1876,7 +1938,17 @@ impl cosmic::Application for NowPlaying {
                     .find(|bus| !self.last_playing_buses.contains(bus))
                     .cloned();
 
-                let active_player = if let Some(new_bus) = newly_started {
+                let find = |bus: &String| players.iter().find(|p| &p.bus_name == bus).cloned();
+                let active_player = if !self.config.auto_switch {
+                    // Stay on the current player while it's here; otherwise the
+                    // one chosen in the popup, then anything playing, then any.
+                    self.active_player_bus
+                        .as_ref()
+                        .and_then(find)
+                        .or_else(|| self.config.selected_player.as_ref().and_then(find))
+                        .or_else(|| players.iter().find(|p| p.playback_status == "Playing").cloned())
+                        .or_else(|| players.first().cloned())
+                } else if let Some(new_bus) = newly_started {
                     players.iter().find(|p| p.bus_name == new_bus).cloned()
                 } else if !currently_playing.is_empty() {
                     self.active_player_bus.as_ref()
@@ -2423,6 +2495,20 @@ impl cosmic::Application for NowPlaying {
                     self.shuffle = Some(!on);
                     return self.command_active(mpris::MprisCommand::SetShuffle(!on));
                 }
+            }
+            Message::SetAutoSwitch(enabled) => {
+                self.config.auto_switch = enabled;
+                self.save_config();
+            }
+            Message::SetPlayerHidden { key, name, hidden } => {
+                crate::debug_log!(crate::debug::CONFIG, "player {key} hidden={hidden}");
+                self.config.hidden_players.retain(|p| p.key != key);
+                if hidden {
+                    self.config.hidden_players.push(crate::config::HiddenPlayer { key, name });
+                }
+                self.save_config();
+                // The settings popup is open, so the next refresh is at most a
+                // second away and applies the change.
             }
             Message::RaisePlayer => {
                 crate::debug_log!(crate::debug::UI, "raise player window");

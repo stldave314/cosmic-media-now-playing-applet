@@ -36,3 +36,6 @@ scroll-wheel-volume = Changer le volume
 scroll-wheel-skip = Changer de piste
 middle-click = Clic du milieu pour lecture/pause
 volume-notice = Volume { $percent } %
+players-heading = Lecteurs
+auto-switch = Suivre le lecteur qui démarre la lecture
+players-hint = Désactivez un lecteur pour le masquer du panneau et de la liste des lecteurs.

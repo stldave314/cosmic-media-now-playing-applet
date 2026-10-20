@@ -564,6 +564,15 @@ const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
 /// The player interface: playback state, metadata, and controls.
 const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
 
+/// A player's stable identity: the first component of its bus name after
+/// the MPRIS prefix. Browsers and some players append a per-instance suffix
+/// (`org.mpris.MediaPlayer2.firefox.instance_1_84`), which changes on every
+/// launch, so it can't be used to remember a player; `firefox` can.
+pub fn player_key(bus_name: &str) -> &str {
+    let rest = bus_name.strip_prefix(MPRIS_PREFIX).unwrap_or(bus_name);
+    rest.split('.').next().unwrap_or(rest)
+}
+
 /// Typed lookup into an MPRIS property or metadata dict. `None` when the key
 /// is absent or holds a different type — both are routine, since players
 /// implement the optional parts of the spec unevenly.
@@ -905,6 +914,16 @@ pub async fn send_command(bus_name: String, command: MprisCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_key_drops_the_instance_suffix() {
+        assert_eq!(player_key("org.mpris.MediaPlayer2.spotify"), "spotify");
+        assert_eq!(player_key("org.mpris.MediaPlayer2.firefox.instance_1_84"), "firefox");
+        assert_eq!(player_key("org.mpris.MediaPlayer2.chromium.instance2783"), "chromium");
+        assert_eq!(player_key("org.mpris.MediaPlayer2.vlc"), "vlc");
+        // Not an MPRIS name at all: returned as far as its first dot.
+        assert_eq!(player_key("com.example.thing"), "com");
+    }
 
     #[test]
     fn loop_status_round_trips_and_cycles_off_all_one() {

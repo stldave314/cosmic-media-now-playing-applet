@@ -36,3 +36,6 @@ scroll-wheel-volume = 音量を変更
 scroll-wheel-skip = 曲を切り替え
 middle-click = 中クリックで再生/一時停止
 volume-notice = 音量 { $percent }%
+players-heading = プレーヤー
+auto-switch = 再生を始めたプレーヤーに切り替える
+players-hint = オフにしたプレーヤーはパネルとプレーヤー一覧に表示されません。

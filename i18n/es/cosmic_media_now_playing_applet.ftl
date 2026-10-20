@@ -36,3 +36,6 @@ scroll-wheel-volume = Cambiar volumen
 scroll-wheel-skip = Cambiar de pista
 middle-click = Clic central para reproducir/pausar
 volume-notice = Volumen { $percent } %
+players-heading = Reproductores
+auto-switch = Seguir al reproductor que empiece a sonar
+players-hint = Desactiva un reproductor para ocultarlo del panel y de la lista de reproductores.

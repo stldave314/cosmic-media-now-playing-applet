@@ -36,3 +36,6 @@ scroll-wheel-volume = Zmień głośność
 scroll-wheel-skip = Przełączaj utwory
 middle-click = Środkowy przycisk: odtwarzaj/wstrzymaj
 volume-notice = Głośność { $percent }%
+players-heading = Odtwarzacze
+auto-switch = Przełączaj na odtwarzacz, który zaczyna grać
+players-hint = Wyłącz odtwarzacz, aby ukryć go na panelu i na liście odtwarzaczy.

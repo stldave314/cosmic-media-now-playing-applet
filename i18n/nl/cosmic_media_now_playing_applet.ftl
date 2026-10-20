@@ -36,3 +36,6 @@ scroll-wheel-volume = Volume wijzigen
 scroll-wheel-skip = Nummers overslaan
 middle-click = Middelklik voor afspelen/pauzeren
 volume-notice = Volume { $percent }%
+players-heading = Spelers
+auto-switch = Volg de speler die begint te spelen
+players-hint = Zet een speler uit om hem te verbergen in het paneel en de spelerlijst.

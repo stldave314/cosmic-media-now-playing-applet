@@ -36,3 +36,6 @@ scroll-wheel-volume = Lautstärke ändern
 scroll-wheel-skip = Titel wechseln
 middle-click = Mittelklick für Wiedergabe/Pause
 volume-notice = Lautstärke { $percent } %
+players-heading = Player
+auto-switch = Dem Player folgen, der zu spielen beginnt
+players-hint = Schalte einen Player aus, um ihn im Panel und in der Playerliste auszublenden.

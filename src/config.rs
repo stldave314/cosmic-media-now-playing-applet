@@ -50,6 +50,17 @@ pub enum ScrollAction {
     Nothing,
 }
 
+/// A player the user has hidden, remembered across sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HiddenPlayer {
+    /// Stable identity derived from the bus name (see
+    /// [`crate::mpris::player_key`]), so a new browser instance stays hidden.
+    pub key: String,
+    /// The player's display name when it was hidden, for the settings list
+    /// while it isn't running.
+    pub name: String,
+}
+
 /// Persistent configuration for the Now Playing applet.
 ///
 /// Stored and loaded automatically via `cosmic-config`.
@@ -90,9 +101,19 @@ pub struct NowPlayingConfig {
     pub scroll_action: ScrollAction,
     /// Middle-clicking the panel applet toggles play/pause.
     pub middle_click_play_pause: bool,
+    /// Follow whichever player starts playing. When off, the applet stays on
+    /// the player chosen in the popup until that player goes away.
+    pub auto_switch: bool,
+    /// Players never shown on the panel, followed, or listed in the popup.
+    pub hidden_players: Vec<HiddenPlayer>,
 }
 
 impl NowPlayingConfig {
+    /// Whether the player with this key is hidden.
+    pub fn is_hidden(&self, key: &str) -> bool {
+        self.hidden_players.iter().any(|p| p.key == key)
+    }
+
     /// Clamp every numeric field to its documented range.
     ///
     /// The sliders can only produce in-range values, but config also arrives
@@ -133,6 +154,8 @@ impl Default for NowPlayingConfig {
             idle_clear_minutes: 0,
             scroll_action: ScrollAction::default(),
             middle_click_play_pause: true,
+            auto_switch: true,
+            hidden_players: Vec::new(),
         }
     }
 }
