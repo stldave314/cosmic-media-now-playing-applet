@@ -108,8 +108,20 @@ pub const MAX_ART_DIMENSION: u32 = 4096;
 
 // ── Timing ──────────────────────────────────────────────────────────────────
 
-/// How often the applet polls MPRIS for player state.
+/// How often the applet re-reads every player while the media popup is open,
+/// so the seek bar and times stay in step with what the player reports.
 pub const MPRIS_POLL_INTERVAL_MS: u64 = 1_000;
+
+/// Fallback re-read interval while the popup is closed. Normally the applet
+/// refreshes only when a player announces a change (MPRIS requires
+/// `PropertiesChanged` and `Seeked`), so this exists only to catch players that
+/// forget to; it is deliberately slow so an idle desktop isn't woken up for
+/// nothing.
+pub const MPRIS_IDLE_POLL_INTERVAL_MS: u64 = 10_000;
+
+/// After a change signal arrives, wait this long before re-reading, so a burst
+/// of signals (a track change typically sends several) costs one refresh.
+pub const MPRIS_SIGNAL_DEBOUNCE_MS: u64 = 40;
 
 /// Tick interval for smoothly advancing the popup progress bar between polls
 /// (~10 fps). Only runs while the popup is open and a track is playing.

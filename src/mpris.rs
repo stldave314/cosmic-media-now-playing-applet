@@ -242,17 +242,6 @@ pub struct PlayerInfo {
     pub next_track: Option<QueuedTrack>,
 }
 
-/// Read a boolean property from an MPRIS player proxy, returning `None` when the
-/// property is absent or not a boolean.
-async fn read_bool_property(player_proxy: &zbus::proxy::Proxy<'_>, name: &str) -> Option<bool> {
-    player_proxy
-        .get_property::<zbus::zvariant::OwnedValue>(name)
-        .await
-        .ok()
-        .and_then(|v| <bool as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
-}
-
-
 /// Pull the four identity fields (track id, url, title, artist) out of an MPRIS
 /// Metadata dict. Shared by the main poller and the armed watcher so both always
 /// derive identical keys — a mismatch would fire the pause immediately.
@@ -328,14 +317,7 @@ pub async fn pause_before_next_track(bus_name: String, armed_key: String) {
         debug_log!(crate::debug::WATCH, "ABORT: no session bus");
         return;
     };
-    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
-        .destination(bus_name.as_str())
-        .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
-        .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"));
-    let Ok(player) = (match cmd_builder {
-        Ok(b) => b.build().await,
-        Err(e) => Err(e),
-    }) else {
+    let Some(player) = interface_proxy(connection, &bus_name, PLAYER_INTERFACE).await else {
         debug_log!(crate::debug::WATCH, "ABORT: could not build player proxy");
         return;
     };
@@ -476,12 +458,8 @@ async fn fetch_next_track(
         return None;
     }
 
-    let builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
-        .destination(bus_name)
-        .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
-        .and_then(|b| b.interface("org.mpris.MediaPlayer2.TrackList"))
-        .ok()?;
-    let track_list = builder.build().await.ok()?;
+    let track_list =
+        interface_proxy(connection, bus_name, "org.mpris.MediaPlayer2.TrackList").await?;
 
     let tracks: Vec<zbus::zvariant::OwnedObjectPath> =
         track_list.get_property("Tracks").await.ok()?;
@@ -515,14 +493,82 @@ async fn fetch_next_track(
     Some(QueuedTrack { title, artist })
 }
 
+/// Every MPRIS player lives at this object path, whatever its bus name.
+const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+/// Bus-name prefix that marks a connection as an MPRIS player.
+const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
+/// The root interface: identity and window-level capabilities.
+const ROOT_INTERFACE: &str = "org.mpris.MediaPlayer2";
+/// The player interface: playback state, metadata, and controls.
+const PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
+
+/// Typed lookup into an MPRIS property or metadata dict. `None` when the key
+/// is absent or holds a different type — both are routine, since players
+/// implement the optional parts of the spec unevenly.
+fn prop<T>(map: &HashMap<String, zbus::zvariant::OwnedValue>, key: &str) -> Option<T>
+where
+    T: TryFrom<zbus::zvariant::OwnedValue>,
+{
+    map.get(key).and_then(|v| T::try_from(v.clone()).ok())
+}
+
+/// An integer property that the spec types as `int64` but some players send
+/// as `uint64` (notably for `mpris:length`); accept either.
+fn prop_i64(map: &HashMap<String, zbus::zvariant::OwnedValue>, key: &str) -> Option<i64> {
+    prop::<i64>(map, key).or_else(|| prop::<u64>(map, key).and_then(|v| i64::try_from(v).ok()))
+}
+
+/// Read every property of one interface in a single round trip.
+///
+/// One `GetAll` replaces the half-dozen individual `Get` calls a poll used to
+/// make per player. The proxy is built uncached: zbus would otherwise subscribe
+/// to `PropertiesChanged` for every throwaway proxy and serve stale `Position`
+/// values, which players never announce.
+async fn get_all(
+    connection: &Connection,
+    bus_name: &str,
+    interface: &'static str,
+) -> Option<HashMap<String, zbus::zvariant::OwnedValue>> {
+    let proxy = zbus::fdo::PropertiesProxy::builder(connection)
+        .destination(bus_name)
+        .ok()?
+        .path(MPRIS_PATH)
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()?;
+    let interface = zbus::names::InterfaceName::from_static_str(interface).ok()?;
+    proxy.get_all(interface).await.ok()
+}
+
+/// Build an uncached proxy for one interface of one player.
+async fn interface_proxy<'a>(
+    connection: &'a Connection,
+    bus_name: &'a str,
+    interface: &'static str,
+) -> Option<zbus::proxy::Proxy<'a>> {
+    zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
+        .destination(bus_name)
+        .ok()?
+        .path(MPRIS_PATH)
+        .ok()?
+        .interface(interface)
+        .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .ok()
+}
+
 /// Find all active MPRIS media players and return their information.
 ///
 /// `art_cache` maps a bus name to the (art URL, bytes) pair read on a previous
-/// poll. `file://` art would otherwise be re-read from disk every second even
-/// though the UI only consumes it when the URL changes; the cache keeps the
-/// per-poll cost at zero for an unchanged track. Only successful reads are
-/// cached — a miss retries next poll, since browsers sometimes write the art
-/// file shortly after publishing the metadata.
+/// poll. `file://` art would otherwise be re-read from disk on every refresh
+/// even though the UI only consumes it when the URL changes; the cache keeps
+/// the cost at zero for an unchanged track. Only successful reads are cached —
+/// a miss retries next time, since browsers sometimes write the art file
+/// shortly after publishing the metadata.
 pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>) -> Vec<PlayerInfo> {
     let mut players = Vec::new();
     let Some(connection) = session_bus().await else {
@@ -537,46 +583,35 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
     };
 
     for name in names {
-        if !name.as_str().starts_with("org.mpris.MediaPlayer2.") {
+        if !name.as_str().starts_with(MPRIS_PREFIX) {
             continue;
         }
         let bus_name = name.to_string();
 
-        let Ok(root_builder) = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
-            .destination(bus_name.as_str())
-            .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
-            .and_then(|b| b.interface("org.mpris.MediaPlayer2"))
-            else { continue; };
-        let Ok(root_proxy) = root_builder.build().await else { continue; };
+        // A player that can't answer GetAll on its player interface isn't one
+        // we can show or control, so it's skipped. The root interface is only
+        // for its name and capabilities, so a failure there just means defaults.
+        let Some(props) = get_all(connection, &bus_name, PLAYER_INTERFACE).await else {
+            continue;
+        };
+        let root = get_all(connection, &bus_name, ROOT_INTERFACE).await.unwrap_or_default();
 
-        let identity: String = root_proxy
-            .get_property::<zbus::zvariant::OwnedValue>("Identity")
-            .await
-            .ok()
-            .and_then(|v| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
+        let identity = prop::<String>(&root, "Identity")
+            .filter(|identity| !identity.is_empty())
             .unwrap_or_else(|| crate::fl!("unknown-player"));
+        let has_track_list = prop::<bool>(&root, "HasTrackList").unwrap_or(false);
 
-        let Ok(player_builder) = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
-            .destination(bus_name.as_str())
-            .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
-            .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"))
-            else { continue; };
-        let Ok(player_proxy) = player_builder.build().await else { continue; };
-
-        let metadata = if let Ok(metadata_map) = player_proxy.get_property::<HashMap<String, zbus::zvariant::OwnedValue>>("Metadata").await {
+        let metadata = if let Some(metadata_map) =
+            prop::<HashMap<String, zbus::zvariant::OwnedValue>>(&props, "Metadata")
+        {
             // Identity fields come from the shared helper so the armed watcher
             // derives byte-identical keys.
             let (track_id, track_url, title, artist) = metadata_identity(&metadata_map);
 
-            let art_url = metadata_map
-                .get("mpris:artUrl")
-                .and_then(|v| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v.clone()).ok());
+            let art_url = prop::<String>(&metadata_map, "mpris:artUrl");
 
-            // Duration in microseconds (mpris:length is int64).
-            let length_us: i64 = metadata_map
-                .get("mpris:length")
-                .and_then(|v| <i64 as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v.clone()).ok())
-                .unwrap_or(0);
+            // Duration in microseconds.
+            let length_us = prop_i64(&metadata_map, "mpris:length").unwrap_or(0);
 
             // Read file:// art immediately — browsers delete the temp file shortly
             // after writing it, so a deferred async fetch always misses it. The
@@ -616,31 +651,31 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             TrackMetadata::default()
         };
 
-        let playback_status: String = player_proxy
-            .get_property::<zbus::zvariant::OwnedValue>("PlaybackStatus")
-            .await
-            .ok()
-            .and_then(|v| <String as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
-            .unwrap_or_else(|| "Stopped".to_string());
+        let playback_status =
+            prop::<String>(&props, "PlaybackStatus").unwrap_or_else(|| "Stopped".to_string());
 
-        // Current playback position in microseconds.
-        let position_us: i64 = player_proxy
-            .get_property::<zbus::zvariant::OwnedValue>("Position")
-            .await
-            .ok()
-            .and_then(|v| <i64 as TryFrom<zbus::zvariant::OwnedValue>>::try_from(v).ok())
-            .unwrap_or(0);
+        // Current playback position in microseconds. Players aren't obliged to
+        // include it in GetAll, so ask for it directly when it's missing.
+        let position_us = match prop_i64(&props, "Position") {
+            Some(position) => position,
+            None => match interface_proxy(connection, &bus_name, PLAYER_INTERFACE).await {
+                Some(player) => player
+                    .get_property::<i64>("Position")
+                    .await
+                    .unwrap_or(0),
+                None => 0,
+            },
+        };
 
         // Whether the player supports skipping forward/backward. Default to true
         // when the property is missing, since the spec marks these as required.
-        let can_go_next = read_bool_property(&player_proxy, "CanGoNext").await.unwrap_or(true);
-        let can_go_previous =
-            read_bool_property(&player_proxy, "CanGoPrevious").await.unwrap_or(true);
+        let can_go_next = prop::<bool>(&props, "CanGoNext").unwrap_or(true);
+        let can_go_previous = prop::<bool>(&props, "CanGoPrevious").unwrap_or(true);
 
         // One line per player, emitted only when its state actually changes —
-        // logging every poll would bury everything else at one line per second.
-        // Position is deliberately excluded from the signature since it always
-        // differs; the armed watcher logs position when that matters.
+        // logging every refresh would bury everything else. Position is
+        // deliberately excluded from the signature since it always differs;
+        // the armed watcher logs position when that matters.
         if crate::debug::ENABLED {
             use std::sync::{Mutex, OnceLock};
             static LAST: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -661,7 +696,13 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             }
         }
 
-        let next_track = fetch_next_track(connection, &bus_name, &metadata.track_id).await;
+        // Only players that advertise TrackList get asked for it; for every
+        // other player the call would just fail after a round trip.
+        let next_track = if has_track_list {
+            fetch_next_track(connection, &bus_name, &metadata.track_id).await
+        } else {
+            None
+        };
 
         players.push(PlayerInfo {
             bus_name,
@@ -681,17 +722,81 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
     players
 }
 
+/// The signals that mean "re-read the players now": a player's properties
+/// changed, it jumped to a new position, or a player joined or left the bus.
+/// All three are mandatory for MPRIS players and for the bus itself, so these
+/// cover nearly every change; the slow fallback poll covers the rest.
+pub type ChangeSignals = futures_util::stream::SelectAll<zbus::MessageStream>;
+
+/// Subscribe to [`ChangeSignals`]. `None` if no subscription could be made, in
+/// which case callers simply poll on their timer.
+pub async fn change_signals() -> Option<ChangeSignals> {
+    let connection = session_bus().await?;
+    let signal = || zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal);
+
+    let rules = [
+        signal()
+            .interface("org.freedesktop.DBus.Properties")
+            .and_then(|b| b.member("PropertiesChanged"))
+            .and_then(|b| b.path(MPRIS_PATH))
+            .map(zbus::match_rule::Builder::build),
+        signal()
+            .interface(PLAYER_INTERFACE)
+            .and_then(|b| b.member("Seeked"))
+            .and_then(|b| b.path(MPRIS_PATH))
+            .map(zbus::match_rule::Builder::build),
+        signal()
+            .sender("org.freedesktop.DBus")
+            .and_then(|b| b.interface("org.freedesktop.DBus"))
+            .and_then(|b| b.member("NameOwnerChanged"))
+            .and_then(|b| b.arg0ns("org.mpris.MediaPlayer2"))
+            .map(zbus::match_rule::Builder::build),
+    ];
+
+    let mut streams = Vec::with_capacity(rules.len());
+    for rule in rules.into_iter().flatten() {
+        match zbus::MessageStream::for_match_rule(rule, connection, Some(64)).await {
+            Ok(stream) => streams.push(stream),
+            Err(why) => debug_log!(crate::debug::MPRIS, "signal subscription failed: {why}"),
+        }
+    }
+    (!streams.is_empty()).then(|| futures_util::stream::select_all(streams))
+}
+
+/// Wait until a player announces a change, or `timeout` passes, whichever is
+/// first. A burst of signals is collapsed into one wake-up. Without a signal
+/// subscription this is a plain sleep.
+pub async fn wait_for_change(signals: &mut Option<ChangeSignals>, timeout: std::time::Duration) {
+    use futures_util::{FutureExt, StreamExt};
+
+    let Some(stream) = signals.as_mut() else {
+        tokio::time::sleep(timeout).await;
+        return;
+    };
+    tokio::select! {
+        () = tokio::time::sleep(timeout) => {}
+        item = stream.next() => {
+            if item.is_none() {
+                // The bus connection went away; fall back to plain polling.
+                debug_log!(crate::debug::MPRIS, "signal stream ended → polling only");
+                *signals = None;
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(
+                crate::constants::MPRIS_SIGNAL_DEBOUNCE_MS,
+            ))
+            .await;
+            while let Some(Some(_)) = stream.next().now_or_never() {}
+        }
+    }
+}
+
 /// Sends a command to a specific MPRIS media player.
 pub async fn send_command(bus_name: String, command: MprisCommand) {
     let Some(connection) = session_bus().await else { return };
-    let cmd_builder = zbus::proxy::Builder::<zbus::proxy::Proxy>::new(connection)
-        .destination(bus_name.as_str())
-        .and_then(|b| b.path("/org/mpris/MediaPlayer2"))
-        .and_then(|b| b.interface("org.mpris.MediaPlayer2.Player"));
-    let Ok(player_proxy) = (match cmd_builder {
-        Ok(b) => b.build().await,
-        Err(e) => Err(e),
-    }) else { return };
+    let Some(player_proxy) = interface_proxy(connection, &bus_name, PLAYER_INTERFACE).await else {
+        return;
+    };
 
     match command {
         MprisCommand::PlayPause => { let _ = player_proxy.call_method("PlayPause", &()).await; }

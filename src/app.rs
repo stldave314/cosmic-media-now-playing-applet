@@ -3,7 +3,8 @@
 use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon};
 use crate::constants::{
     APPROX_CHAR_WIDTH, BACKDROP_CORNER_MARGIN, BACKDROP_SCRIM, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS,
-    MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_POLL_INTERVAL_MS,
+    MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_IDLE_POLL_INTERVAL_MS,
+    MPRIS_POLL_INTERVAL_MS,
     MUSIC_NOTE_SIZE, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
     SCROLL_TICK_BASE_MS, SCROLL_TICK_MIN_MS, SCROLL_TICK_STEP_MS, TEXT_OVERDRAW_CHARS,
     UPDATE_LATEST_RELEASE_URL, USER_AGENT, WIDTH_SETTLE_MS,
@@ -1207,15 +1208,30 @@ pub enum Message {
     UpdateCheckComplete(String),
 }
 
-/// Helper: creates the MPRIS poller stream. The art cache lives here, across
-/// polls, so unchanged `file://` album art isn't re-read from disk every second.
-fn mpris_poller_stream(_data: &u8) -> impl cosmic::iced::futures::Stream<Item = Message> {
-    cosmic::iced::stream::channel(4, async |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
+/// Helper: creates the MPRIS refresh stream. It re-reads the players whenever
+/// one announces a change, and otherwise on a timer: every second while the
+/// popup is open (`fast`), so the seek bar tracks the player, and rarely
+/// while it's closed, purely as a safety net. The art cache lives here, across
+/// refreshes, so unchanged `file://` album art isn't re-read from disk.
+fn mpris_poller_stream(fast: &bool) -> impl cosmic::iced::futures::Stream<Item = Message> {
+    let interval = std::time::Duration::from_millis(if *fast {
+        MPRIS_POLL_INTERVAL_MS
+    } else {
+        MPRIS_IDLE_POLL_INTERVAL_MS
+    });
+    cosmic::iced::stream::channel(4, async move |mut channel: cosmic::iced::futures::channel::mpsc::Sender<Message>| {
         let mut art_cache = std::collections::HashMap::new();
+        let mut signals = mpris::change_signals().await;
+        crate::debug_log!(
+            crate::debug::MPRIS,
+            "refresh stream: signals={} fallback={}ms",
+            signals.is_some(),
+            interval.as_millis()
+        );
         loop {
             let players = mpris::get_all_players(&mut art_cache).await;
             _ = channel.send(Message::MprisUpdate(players)).await;
-            tokio::time::sleep(std::time::Duration::from_millis(MPRIS_POLL_INTERVAL_MS)).await;
+            mpris::wait_for_change(&mut signals, interval).await;
         }
     })
 }
@@ -1502,8 +1518,10 @@ impl cosmic::Application for NowPlaying {
     /// Subscriptions: MPRIS poller, scroll timer, config watcher.
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subs = vec![
-            // 1. MPRIS metadata poller.
-            Subscription::run_with(1u8, mpris_poller_stream),
+            // 1. MPRIS refresh: on change signals, plus a timer that is fast
+            // only while the popup is open. Keyed on that, so opening the
+            // popup restarts it and shows fresh state straight away.
+            Subscription::run_with(self.popup.is_some(), mpris_poller_stream),
             // 2. Config watcher.
             self.watch_config::<NowPlayingConfig>(Self::APP_ID)
                 .map(|update| Message::ConfigChanged(update.config)),
@@ -1963,12 +1981,14 @@ impl cosmic::Application for NowPlaying {
             Message::PanelPointerMoved(window) => {
                 // A pointer move on the applet's own surface means we're hovering
                 // the panel (the surface is autosized to exactly the widget).
-                if Some(window) == self.core.main_window_id() {
+                if Some(window) == self.core.main_window_id() && !self.panel_hovered {
+                    crate::debug_log!(crate::debug::UI, "panel hover → on");
                     self.panel_hovered = true;
                 }
             }
             Message::PanelPointerLeft(window) => {
-                if Some(window) == self.core.main_window_id() {
+                if Some(window) == self.core.main_window_id() && self.panel_hovered {
+                    crate::debug_log!(crate::debug::UI, "panel hover → off");
                     self.panel_hovered = false;
                 }
             }
