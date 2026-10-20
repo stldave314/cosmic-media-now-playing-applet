@@ -18,7 +18,7 @@ use crate::backdrop;
 use crate::fl;
 use crate::mpris;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::alignment::Vertical;
+use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
 use cosmic::iced::widget::image::Handle as ImageHandle;
 use cosmic::iced::{window::Id, Color, Length, Limits, Subscription};
@@ -296,6 +296,34 @@ fn is_wide(c: char) -> bool {
     matches!(u32::from(c),
         0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF
         | 0xFE30..=0xFE4F | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x20000..=0x3FFFD)
+}
+
+/// A row that keeps `middle` exactly centered. The controls on either side
+/// sit in equal-width columns, packed toward the middle, so a button that's
+/// missing on one side (no next track, no shuffle) can't pull it off center.
+fn centered_row<'a>(
+    left: Vec<Element<'a, Message>>,
+    middle: impl Into<Element<'a, Message>>,
+    right: Vec<Element<'a, Message>>,
+    spacing: f32,
+) -> Element<'a, Message> {
+    let side = |items: Vec<Element<'a, Message>>, align: Horizontal| {
+        widget::container(
+            widget::Row::with_children(items)
+                .spacing(spacing)
+                .align_y(Vertical::Center),
+        )
+        .width(Length::Fill)
+        .align_x(align)
+    };
+    widget::row::with_capacity(3)
+        .spacing(spacing)
+        .align_y(Vertical::Center)
+        .width(Length::Fill)
+        .push(side(left, Horizontal::Right))
+        .push(middle)
+        .push(side(right, Horizontal::Left))
+        .into()
 }
 
 /// A settings entry whose label sits tightly above a full-width slider.
@@ -1138,12 +1166,11 @@ impl NowPlaying {
         });
         let has_modes = shuffle_button.is_some() || repeat_button.is_some();
 
-        let mut controls = widget::row::with_capacity(5)
-            .spacing(if has_modes { 12 } else { 20 })
-            .align_y(Vertical::Center)
-            .push_maybe(shuffle_button);
+        // Play/pause stays centered whichever of the others are present.
+        let mut left: Vec<Element<'_, Message>> = Vec::with_capacity(2);
+        left.extend(shuffle_button);
         if self.can_go_previous {
-            controls = controls.push(round_button(
+            left.push(round_button(
                 "media-skip-backward-symbolic",
                 22,
                 44.0,
@@ -1153,17 +1180,9 @@ impl NowPlaying {
                 Message::PlayerCommand(mpris::MprisCommand::Previous),
             ));
         }
-        controls = controls.push(round_button(
-            play_pause_icon,
-            26,
-            56.0,
-            pal.play,
-            pal.on_play,
-            play_pause_name.clone(),
-            Message::PlayerCommand(mpris::MprisCommand::PlayPause),
-        ));
+        let mut right: Vec<Element<'_, Message>> = Vec::with_capacity(2);
         if self.can_go_next {
-            controls = controls.push(round_button(
+            right.push(round_button(
                 "media-skip-forward-symbolic",
                 22,
                 44.0,
@@ -1173,7 +1192,21 @@ impl NowPlaying {
                 Message::PlayerCommand(mpris::MprisCommand::Next),
             ));
         }
-        let controls = controls.push_maybe(repeat_button);
+        right.extend(repeat_button);
+        let controls = centered_row(
+            left,
+            round_button(
+                play_pause_icon,
+                26,
+                56.0,
+                pal.play,
+                pal.on_play,
+                play_pause_name.clone(),
+                Message::PlayerCommand(mpris::MprisCommand::PlayPause),
+            ),
+            right,
+            if has_modes { 12.0 } else { 20.0 },
+        );
 
         let mut content = widget::column::with_capacity(7)
             .spacing(14)
@@ -1184,7 +1217,7 @@ impl NowPlaying {
         if let Some(bar) = progress_bar {
             content = content.push(bar);
         }
-        content = content.push(widget::container(controls).center_x(Length::Fill));
+        content = content.push(controls);
 
         // Podcast controls — skip back, speed, skip forward — for long tracks
         // only, and each only when the player can do it.
@@ -1224,17 +1257,20 @@ impl NowPlaying {
                 )
             });
             if self.can_seek || speed.is_some() {
-                let mut row = widget::row::with_capacity(3)
-                    .spacing(12)
-                    .align_y(Vertical::Center);
-                if self.can_seek {
-                    row = row.push(skip("object-rotate-left-symbolic", -SKIP_BACK_SECS, true));
-                }
-                row = row.push_maybe(speed);
-                if self.can_seek {
-                    row = row.push(skip("object-rotate-right-symbolic", SKIP_FORWARD_SECS, false));
-                }
-                content = content.push(widget::container(row).center_x(Length::Fill));
+                // The speed chip sits under play/pause; the skips flank it.
+                let (back, forward) = if self.can_seek {
+                    (
+                        vec![skip("object-rotate-left-symbolic", -SKIP_BACK_SECS, true)],
+                        vec![skip("object-rotate-right-symbolic", SKIP_FORWARD_SECS, false)],
+                    )
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+                let middle: Element<'_, Message> = match speed {
+                    Some(chip) => chip,
+                    None => widget::Space::new().width(Length::Fixed(0.0)).into(),
+                };
+                content = content.push(centered_row(back, middle, forward, 12.0));
             }
         }
 
@@ -2066,51 +2102,74 @@ impl cosmic::Application for NowPlaying {
             } else {
                 "media-playback-start-symbolic"
             };
-            let mut controls = widget::row::with_capacity(shown + usize::from(show_stop))
-                .spacing(4)
-                .align_y(Vertical::Center);
+            let mut left: Vec<Element<'_, Message>> = Vec::with_capacity(1);
             if show_skips && want_prev {
-                controls = controls.push(
+                left.push(
                     widget::button::icon(
                         widget::icon::from_name("media-skip-backward-symbolic").size(16),
                     )
                     .name(fl!("a11y-previous"))
-                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous)),
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous))
+                    .into(),
                 );
             }
-            controls = controls.push(
+            let play_pause: Element<'_, Message> =
                 widget::button::icon(widget::icon::from_name(play_pause_icon).size(16))
                     .name(if self.playback_status == "Playing" {
                         fl!("a11y-pause")
                     } else {
                         fl!("a11y-play")
                     })
-                    .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause)),
-            );
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause))
+                    .into();
+            let mut right: Vec<Element<'_, Message>> = Vec::with_capacity(2);
             if show_skips && want_next {
-                controls = controls.push(
+                right.push(
                     widget::button::icon(
                         widget::icon::from_name("media-skip-forward-symbolic").size(16),
                     )
                     .name(fl!("a11y-next"))
-                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Next)),
+                    .on_press(Message::PlayerCommand(mpris::MprisCommand::Next))
+                    .into(),
                 );
             }
             // STOP (solid square): pause and hand the panel space back until
             // there's something new to show.
             if show_stop {
-                controls = controls.push(
+                right.push(
                     widget::button::icon(
                         widget::icon::from_name("media-playback-stop-symbolic").size(16),
                     )
                     .name(fl!("a11y-stop"))
-                    .on_press(Message::StopPlayback),
+                    .on_press(Message::StopPlayback)
+                    .into(),
                 );
             }
 
+            // Play/pause sits exactly in the middle when there's room to mirror
+            // the fuller side; STOP makes the right side the longer one, so on
+            // a narrow strip that would cost a button, and the controls are
+            // packed together instead.
+            let sides = left.len().max(right.len());
+            let controls: Element<'_, Message> =
+                if available >= (1 + 2 * sides) as f32 * CONTROL_BUTTON_WIDTH {
+                    centered_row(left, play_pause, right, 4.0)
+                } else {
+                    let mut packed = left;
+                    packed.push(play_pause);
+                    packed.extend(right);
+                    widget::container(
+                        widget::Row::with_children(packed)
+                            .spacing(4)
+                            .align_y(Vertical::Center),
+                    )
+                    .center_x(Length::Fill)
+                    .into()
+                };
+
             widget::row::with_capacity(2)
                 .push(leading_icon)
-                .push(widget::container(controls).center_x(Length::Fill))
+                .push(controls)
                 .width(Length::Fill)
                 .spacing(self.config.icon_spacing as f32)
                 .align_y(Vertical::Center)
