@@ -2,7 +2,8 @@
 
 use crate::config::{DisplayFormat, NowPlayingConfig, PanelIcon, ScrollAction};
 use crate::constants::{
-    APPROX_CHAR_WIDTH, BACKDROP_CORNER_MARGIN, BACKDROP_SCRIM, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS,
+    APPROX_CHAR_WIDTH, BACKDROP_CORNER_MARGIN, LONG_TRACK_US, PLAYBACK_RATES, SKIP_BACK_SECS,
+    SKIP_FORWARD_SECS, BACKDROP_SCRIM, CONTROL_BUTTON_WIDTH, HTTP_TIMEOUT_SECS,
     MAX_ART_DIMENSION, MAX_ART_FILE_BYTES, MAX_ART_HTTP_BYTES, MPRIS_IDLE_POLL_INTERVAL_MS,
     MPRIS_POLL_INTERVAL_MS,
     MUSIC_NOTE_SIZE, PANEL_NOTICE_MS, POPUP_ART_SIZE, PROGRESS_TICK_MS, SCROLL_GAP,
@@ -141,6 +142,13 @@ pub struct NowPlaying {
     loop_status: Option<mpris::LoopStatus>,
     /// Whether the active player can bring its own window forward.
     can_raise: bool,
+    /// Whether the active player can seek.
+    can_seek: bool,
+    /// The active player's playback speed (1.0 is normal). Position is
+    /// interpolated at this rate between refreshes.
+    rate: f64,
+    /// The speeds the active player accepts, when it can change speed.
+    rate_range: Option<(f64, f64)>,
     /// Every player seen this session as (key, display name), hidden or not,
     /// in order of first appearance — the settings list of players.
     known_players: Vec<(String, String)>,
@@ -222,6 +230,9 @@ impl Default for NowPlaying {
             loop_status: None,
             can_raise: false,
             known_players: Vec::new(),
+            can_seek: true,
+            rate: 1.0,
+            rate_range: None,
             scroll_steps: 0.0,
             last_scroll_skip: None,
             panel_notice: None,
@@ -379,6 +390,69 @@ fn blend(from: Color, to: Color, t: f32) -> Color {
     }
 }
 
+/// A symbolic icon drawn in a fixed color. A button's icon color doesn't reach
+/// an icon nested in a container, which then inherits the surrounding text
+/// color (white on the white play button), so the color is set on the icon.
+fn tinted_icon(name: &'static str, size: u16, color: Color) -> widget::Icon {
+    widget::icon::from_name(name)
+        .size(size)
+        .icon()
+        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(move |_| {
+            cosmic::iced::widget::svg::Style { color: Some(color) }
+        })))
+}
+
+/// A pill-shaped button in fixed colors, for the media popup's secondary
+/// controls. Hover and press tint the fill toward the ink.
+fn chip_button<'a>(
+    content: impl Into<Element<'a, Message>>,
+    fill: Color,
+    ink: Color,
+    on_press: Message,
+) -> Element<'a, Message> {
+    let style = move |t: f32| {
+        let mut s = widget::button::Style::new();
+        s.background = Some(cosmic::iced::Background::Color(blend(fill, ink, t)));
+        s.border_radius = 16.0.into();
+        s.icon_color = Some(ink);
+        s.text_color = Some(ink);
+        s
+    };
+    widget::button::custom(content)
+        .padding([6, 12])
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(move |_, _| style(0.0)),
+            disabled: Box::new(move |_| style(0.0)),
+            hovered: Box::new(move |_, _| style(0.12)),
+            pressed: Box::new(move |_, _| style(0.2)),
+        })
+        .on_press(on_press)
+        .into()
+}
+
+/// The speed the speed button moves to from `current`: the next step up in
+/// [`PLAYBACK_RATES`] that the player accepts, wrapping round to the slowest.
+fn next_rate(current: f64, (min, max): (f64, f64)) -> f64 {
+    let offered: Vec<f64> = PLAYBACK_RATES
+        .iter()
+        .copied()
+        .filter(|rate| (min - 1e-6..=max + 1e-6).contains(rate))
+        .collect();
+    offered
+        .iter()
+        .copied()
+        .find(|rate| *rate > current + 0.01)
+        .or_else(|| offered.first().copied())
+        .unwrap_or(1.0)
+}
+
+/// A speed as the button shows it, without trailing zeros: `1`, `1.25`, `1.5`,
+/// using the locale's decimal separator.
+fn rate_number(rate: f64, decimal_separator: &str) -> String {
+    let rounded = (rate * 100.0).round() / 100.0;
+    format!("{rounded}").replace('.', decimal_separator)
+}
+
 /// A circular icon button in fixed colors, for the media popup. Hover and
 /// press tint the fill toward the icon color; a transparent button gains a
 /// faint disc instead.
@@ -403,15 +477,7 @@ fn round_button<'a>(
         s.text_color = Some(ink);
         s
     };
-    // The icon is colored directly: the button's icon color doesn't reach an
-    // icon nested in a container, which then inherits the surrounding text
-    // color (white on the white play button).
-    let glyph = widget::icon::from_name(icon)
-        .size(icon_size)
-        .icon()
-        .class(cosmic::theme::Svg::Custom(std::rc::Rc::new(move |_| {
-            cosmic::iced::widget::svg::Style { color: Some(ink) }
-        })));
+    let glyph = tinted_icon(icon, icon_size, ink);
     widget::button::custom(
         widget::container(glyph)
             .center_x(Length::Fill)
@@ -610,6 +676,25 @@ impl NowPlaying {
         self.shuffle = player.and_then(|p| p.shuffle);
         self.loop_status = player.and_then(|p| p.loop_status);
         self.can_raise = player.is_some_and(|p| p.can_raise);
+        self.can_seek = player.is_none_or(|p| p.can_seek);
+        self.rate = player.map_or(1.0, |p| p.rate);
+        self.rate_range = player.and_then(|p| p.rate_range);
+    }
+
+    /// The playback position now, in microseconds: the last reported value
+    /// advanced by the time since, at the player's speed, while playing.
+    fn effective_position_us(&self) -> f64 {
+        let reported = self.position_us as f64;
+        let position = if self.playback_status == "Playing" {
+            reported + self.position_instant.elapsed().as_micros() as f64 * self.rate
+        } else {
+            reported
+        };
+        if self.length_us > 0 {
+            position.min(self.length_us as f64)
+        } else {
+            position
+        }
     }
 
     /// Send `command` to the active player, if there is one.
@@ -855,13 +940,7 @@ impl NowPlaying {
             // Interpolate the reported position forward by the time elapsed since
             // the last poll (while playing) so the bar advances smoothly between
             // the 1s MPRIS updates rather than jumping once a second.
-            let effective_us = if self.playback_status == "Playing" {
-                (self.position_us as f64
-                    + self.position_instant.elapsed().as_micros() as f64)
-                    .min(self.length_us as f64)
-            } else {
-                self.position_us as f64
-            };
+            let effective_us = self.effective_position_us();
             let progress = if self.seeking {
                 self.seek_value
             } else {
@@ -976,6 +1055,54 @@ impl NowPlaying {
             content = content.push(bar);
         }
         content = content.push(widget::container(controls).center_x(Length::Fill));
+
+        // Podcast controls — skip back, speed, skip forward — for long tracks
+        // only, and each only when the player can do it.
+        if self.length_us >= LONG_TRACK_US {
+            let chip_fill = with_alpha(pal.ink, 0.1);
+            let skip = |icon: &'static str, seconds: i64, icon_first: bool| {
+                let label = widget::text::body(fl!("seek-seconds", seconds = seconds.abs()))
+                    .class(cosmic::theme::Text::Color(pal.ink));
+                let glyph = tinted_icon(icon, 16, pal.ink);
+                let row = if icon_first {
+                    widget::row::with_capacity(2).push(glyph).push(label)
+                } else {
+                    widget::row::with_capacity(2).push(label).push(glyph)
+                };
+                chip_button(
+                    row.spacing(6).align_y(Vertical::Center),
+                    chip_fill,
+                    pal.ink,
+                    Message::SeekBy(seconds),
+                )
+            };
+            let speed = self.rate_range.filter(|_| self.can_control).map(|_| {
+                let separator = fl!("decimal-separator");
+                chip_button(
+                    widget::text::body(fl!(
+                        "playback-rate",
+                        rate = rate_number(self.rate, &separator)
+                    ))
+                    .class(cosmic::theme::Text::Color(pal.ink)),
+                    chip_fill,
+                    pal.ink,
+                    Message::CycleRate,
+                )
+            });
+            if self.can_seek || speed.is_some() {
+                let mut row = widget::row::with_capacity(3)
+                    .spacing(12)
+                    .align_y(Vertical::Center);
+                if self.can_seek {
+                    row = row.push(skip("object-rotate-left-symbolic", -SKIP_BACK_SECS, true));
+                }
+                row = row.push_maybe(speed);
+                if self.can_seek {
+                    row = row.push(skip("object-rotate-right-symbolic", SKIP_FORWARD_SECS, false));
+                }
+                content = content.push(widget::container(row).center_x(Length::Fill));
+            }
+        }
 
         // "Next: …" — only for players that expose the TrackList interface.
         if let Some((next_title, next_artist)) = &self.next_track {
@@ -1464,6 +1591,10 @@ pub enum Message {
     CycleRepeat,
     /// Bring the active player's window forward and close the popup.
     RaisePlayer,
+    /// Jump forward (positive) or back (negative) by this many seconds.
+    SeekBy(i64),
+    /// Move the active player to the next playback speed.
+    CycleRate,
     /// User toggled following whichever player starts playing.
     SetAutoSwitch(bool),
     /// User hid or showed a player (by key; the name is remembered for the
@@ -2496,6 +2627,28 @@ impl cosmic::Application for NowPlaying {
                     return self.command_active(mpris::MprisCommand::SetShuffle(!on));
                 }
             }
+            Message::SeekBy(seconds) => {
+                let offset_us = seconds * 1_000_000;
+                // Move the bar at once; the player's Seeked signal confirms it.
+                let target = (self.effective_position_us() + offset_us as f64)
+                    .clamp(0.0, self.length_us.max(0) as f64);
+                self.position_us = target as i64;
+                self.position_instant = std::time::Instant::now();
+                crate::debug_log!(crate::debug::UI, "seek {seconds:+}s");
+                return self.command_active(mpris::MprisCommand::Seek(offset_us));
+            }
+            Message::CycleRate => {
+                if let Some(range) = self.rate_range {
+                    let next = next_rate(self.rate, range);
+                    // Re-anchor so the position already played at the old
+                    // speed isn't re-counted at the new one.
+                    self.position_us = self.effective_position_us() as i64;
+                    self.position_instant = std::time::Instant::now();
+                    self.rate = next;
+                    crate::debug_log!(crate::debug::UI, "rate → {next}");
+                    return self.command_active(mpris::MprisCommand::SetRate(next));
+                }
+            }
             Message::SetAutoSwitch(enabled) => {
                 self.config.auto_switch = enabled;
                 self.save_config();
@@ -2662,4 +2815,32 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         }
     }
     std::cmp::Ordering::Equal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_steps_up_within_the_players_range_and_wraps() {
+        let full = (0.5, 2.0);
+        assert_eq!(next_rate(1.0, full), 1.25);
+        assert_eq!(next_rate(1.25, full), 1.5);
+        assert_eq!(next_rate(2.0, full), 1.0);
+        // An off-grid speed set elsewhere moves to the next step above it.
+        assert_eq!(next_rate(1.1, full), 1.25);
+        // A player capped at 1.5× never offers more.
+        assert_eq!(next_rate(1.5, (1.0, 1.5)), 1.0);
+        // A player that only allows slower than normal still gets 1×.
+        assert_eq!(next_rate(1.0, (0.25, 1.0)), 1.0);
+    }
+
+    #[test]
+    fn speed_labels_drop_trailing_zeros_and_use_the_locale_separator() {
+        assert_eq!(rate_number(1.0, "."), "1");
+        assert_eq!(rate_number(1.5, "."), "1.5");
+        assert_eq!(rate_number(1.25, ","), "1,25");
+        // Floating-point noise from a player is rounded away.
+        assert_eq!(rate_number(1.2999999, "."), "1.3");
+    }
 }

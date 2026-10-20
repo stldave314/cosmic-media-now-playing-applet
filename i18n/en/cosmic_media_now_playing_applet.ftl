@@ -39,3 +39,6 @@ volume-notice = Volume { $percent }%
 players-heading = Players
 auto-switch = Follow the Player That Starts Playing
 players-hint = Switch a player off to hide it from the panel and the player list.
+seek-seconds = { $seconds } s
+playback-rate = { $rate }×
+decimal-separator = .

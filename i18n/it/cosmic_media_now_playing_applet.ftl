@@ -39,3 +39,6 @@ volume-notice = Volume { $percent }%
 players-heading = Lettori
 auto-switch = Segui il lettore che inizia a riprodurre
 players-hint = Disattiva un lettore per nasconderlo dal pannello e dall'elenco dei lettori.
+seek-seconds = { $seconds } s
+playback-rate = { $rate }×
+decimal-separator = ,

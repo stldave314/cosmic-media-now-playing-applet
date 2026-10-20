@@ -265,6 +265,10 @@ pub enum MprisCommand {
     SetLoopStatus(LoopStatus),
     /// Ask the player to bring its own window to the front (MPRIS `Raise`).
     Raise,
+    /// Jump forward (positive) or back (negative) by this many microseconds.
+    Seek(i64),
+    /// Set the playback speed (1.0 is normal).
+    SetRate(f64),
 }
 
 /// The upcoming queued track, if the player implements the optional
@@ -302,6 +306,13 @@ pub struct PlayerInfo {
     /// Whether the player can bring its own window to the front (MPRIS
     /// `CanRaise`). Background services and browser tabs often can't.
     pub can_raise: bool,
+    /// Whether the player can seek (MPRIS `CanSeek`).
+    pub can_seek: bool,
+    /// Current playback speed, 1.0 being normal.
+    pub rate: f64,
+    /// The speeds the player accepts, when it reports a range other than
+    /// exactly 1.0.
+    pub rate_range: Option<(f64, f64)>,
 }
 
 /// Pull the four identity fields (track id, url, title, artist) out of an MPRIS
@@ -476,7 +487,14 @@ pub async fn pause_before_next_track(bus_name: String, armed_key: String) {
             anchor_us = reported_us;
             anchor_at = std::time::Instant::now();
         }
-        let position_us = anchor_us + anchor_at.elapsed().as_micros() as i64;
+        // A player running at 2× covers two seconds of track per second.
+        let rate = player
+            .get_property::<f64>("Rate")
+            .await
+            .ok()
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .unwrap_or(1.0);
+        let position_us = anchor_us + (anchor_at.elapsed().as_micros() as f64 * rate) as i64;
 
         let pause_at_us = length_us - PAUSE_LEAD_US;
         let remaining_ms = (pause_at_us - position_us) / 1_000;
@@ -500,8 +518,9 @@ pub async fn pause_before_next_track(bus_name: String, armed_key: String) {
             return;
         }
 
-        // Sleep just long enough to land on the pause point.
-        let wait_ms = remaining_ms.clamp(20, ARMED_WATCH_MAX_SLEEP_MS as i64);
+        // Sleep just long enough to land on the pause point, in wall-clock
+        // time at the current speed.
+        let wait_ms = ((remaining_ms as f64 / rate) as i64).clamp(20, ARMED_WATCH_MAX_SLEEP_MS as i64);
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 }
@@ -745,6 +764,12 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
         let can_go_previous = prop::<bool>(&props, "CanGoPrevious").unwrap_or(true);
         let volume = prop::<f64>(&props, "Volume").filter(|v| v.is_finite());
         let can_control = prop::<bool>(&props, "CanControl").unwrap_or(true);
+        let can_seek = prop::<bool>(&props, "CanSeek").unwrap_or(true);
+        let rate = prop::<f64>(&props, "Rate").filter(|r| r.is_finite() && *r > 0.0).unwrap_or(1.0);
+        let rate_range = match (prop::<f64>(&props, "MinimumRate"), prop::<f64>(&props, "MaximumRate")) {
+            (Some(min), Some(max)) if min.is_finite() && max.is_finite() && min < max => Some((min, max)),
+            _ => None,
+        };
         let shuffle = prop::<bool>(&props, "Shuffle");
         let loop_status = prop::<String>(&props, "LoopStatus").and_then(|s| LoopStatus::parse(&s));
 
@@ -795,6 +820,9 @@ pub async fn get_all_players(art_cache: &mut HashMap<String, (String, Vec<u8>)>)
             shuffle,
             loop_status,
             can_raise,
+            can_seek,
+            rate,
+            rate_range,
         });
     }
 
@@ -908,6 +936,12 @@ pub async fn send_command(bus_name: String, command: MprisCommand) {
             let _ = player_proxy.set_property("LoopStatus", status.as_str()).await;
         }
         MprisCommand::Raise => {}
+        MprisCommand::Seek(offset_us) => {
+            let _ = player_proxy.call_method("Seek", &(offset_us,)).await;
+        }
+        MprisCommand::SetRate(rate) => {
+            let _ = player_proxy.set_property("Rate", rate).await;
+        }
     }
 }
 

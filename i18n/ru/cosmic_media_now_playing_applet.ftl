@@ -39,3 +39,6 @@ volume-notice = Громкость { $percent } %
 players-heading = Проигрыватели
 auto-switch = Переключаться на начавший играть проигрыватель
 players-hint = Выключите проигрыватель, чтобы скрыть его с панели и из списка.
+seek-seconds = { $seconds } с
+playback-rate = { $rate }×
+decimal-separator = ,

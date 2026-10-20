@@ -39,3 +39,6 @@ volume-notice = Lautstärke { $percent } %
 players-heading = Player
 auto-switch = Dem Player folgen, der zu spielen beginnt
 players-hint = Schalte einen Player aus, um ihn im Panel und in der Playerliste auszublenden.
+seek-seconds = { $seconds } s
+playback-rate = { $rate }×
+decimal-separator = ,

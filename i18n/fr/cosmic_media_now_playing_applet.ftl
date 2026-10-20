@@ -39,3 +39,6 @@ volume-notice = Volume { $percent } %
 players-heading = Lecteurs
 auto-switch = Suivre le lecteur qui démarre la lecture
 players-hint = Désactivez un lecteur pour le masquer du panneau et de la liste des lecteurs.
+seek-seconds = { $seconds } s
+playback-rate = { $rate }×
+decimal-separator = ,

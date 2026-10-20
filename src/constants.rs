@@ -64,6 +64,23 @@ pub const POPUP_WIDTH: f32 = 360.0;
 /// panel.
 pub const SETTINGS_MAX_HEIGHT: f32 = 560.0;
 
+/// Tracks at least this long (in microseconds) get the podcast controls —
+/// skip back, skip forward, and playback speed — in the popup. Ten minutes
+/// separates episodes, audiobook chapters, and lectures from songs.
+pub const LONG_TRACK_US: i64 = 10 * 60 * 1_000_000;
+
+/// How far the podcast controls jump back, in seconds. Shorter than the jump
+/// forward, as in most podcast apps: going back is for catching a missed
+/// sentence, going forward for skipping a segment.
+pub const SKIP_BACK_SECS: i64 = 15;
+
+/// How far the podcast controls jump forward, in seconds.
+pub const SKIP_FORWARD_SECS: i64 = 30;
+
+/// Playback speeds the speed button cycles through, slowest first. Only the
+/// ones inside the player's own MinimumRate..=MaximumRate are offered.
+pub const PLAYBACK_RATES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+
 /// Edge length in pixels of the album-art card in the media popup.
 pub const POPUP_ART_SIZE: f32 = 220.0;
 

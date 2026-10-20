@@ -39,3 +39,6 @@ volume-notice = 音量 { $percent }%
 players-heading = プレーヤー
 auto-switch = 再生を始めたプレーヤーに切り替える
 players-hint = オフにしたプレーヤーはパネルとプレーヤー一覧に表示されません。
+seek-seconds = { $seconds }秒
+playback-rate = { $rate }×
+decimal-separator = .

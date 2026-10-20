@@ -39,3 +39,6 @@ volume-notice = Volumen { $percent } %
 players-heading = Reproductores
 auto-switch = Seguir al reproductor que empiece a sonar
 players-hint = Desactiva un reproductor para ocultarlo del panel y de la lista de reproductores.
+seek-seconds = { $seconds } s
+playback-rate = { $rate }×
+decimal-separator = ,

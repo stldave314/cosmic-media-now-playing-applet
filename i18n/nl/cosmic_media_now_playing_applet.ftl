@@ -39,3 +39,6 @@ volume-notice = Volume { $percent }%
 players-heading = Spelers
 auto-switch = Volg de speler die begint te spelen
 players-hint = Zet een speler uit om hem te verbergen in het paneel en de spelerlijst.
+seek-seconds = { $seconds } s
+playback-rate = { $rate }×
+decimal-separator = ,

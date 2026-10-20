@@ -39,3 +39,6 @@ volume-notice = 音量 { $percent }%
 players-heading = 播放器
 auto-switch = 跟随开始播放的播放器
 players-hint = 关闭某个播放器即可在面板和播放器列表中隐藏它。
+seek-seconds = { $seconds } 秒
+playback-rate = { $rate }×
+decimal-separator = .
