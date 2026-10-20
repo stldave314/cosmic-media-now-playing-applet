@@ -289,12 +289,13 @@ fn http_client() -> Option<&'static reqwest::Client> {
 /// The tight inner spacing keeps the settings popup short.
 fn labeled_slider<'a>(
     label: String,
-    slider: impl Into<Element<'a, Message>>,
+    slider: widget::Slider<'a, f32, Message, cosmic::Theme>,
 ) -> Element<'a, Message> {
     widget::column::with_capacity(2)
         .spacing(2)
-        .push(widget::text::body(label))
-        .push(slider)
+        .push(widget::text::body(label.clone()))
+        // Screen readers announce the visible label, value included.
+        .push(slider.name(label))
         .into()
 }
 
@@ -427,6 +428,7 @@ fn chip_button<'a>(
     content: impl Into<Element<'a, Message>>,
     fill: Color,
     ink: Color,
+    name: String,
     on_press: Message,
 ) -> Element<'a, Message> {
     let style = move |t: f32| {
@@ -438,6 +440,7 @@ fn chip_button<'a>(
         s
     };
     widget::button::custom(content)
+        .name(name)
         .padding([6, 12])
         .class(cosmic::theme::Button::Custom {
             active: Box::new(move |_, _| style(0.0)),
@@ -481,6 +484,7 @@ fn round_button<'a>(
     diameter: f32,
     fill: Color,
     ink: Color,
+    name: String,
     on_press: Message,
 ) -> Element<'a, Message> {
     let style = move |t: f32| {
@@ -502,6 +506,7 @@ fn round_button<'a>(
             .center_x(Length::Fill)
             .center_y(Length::Fill),
     )
+    .name(name)
     .width(Length::Fixed(diameter))
     .height(Length::Fixed(diameter))
     .padding(0)
@@ -865,6 +870,7 @@ impl NowPlaying {
             32.0,
             pal.chip,
             pal.ink,
+            fl!("a11y-settings"),
             Message::SwitchPopupView(PopupState::SettingsView),
         );
         let mut header = widget::row::with_capacity(3).align_y(Vertical::Center);
@@ -923,6 +929,7 @@ impl NowPlaying {
         // Wrap art in a button when there's a URL to open; plain container otherwise.
         let art: Element<'_, Message> = if self.openable_track_url().is_some() {
             widget::button::custom(art_inner)
+                .name(fl!("a11y-open-track"))
                 .padding(0)
                 .on_press(Message::OpenTrackUrl)
                 .class(cosmic::theme::Button::Text)
@@ -964,6 +971,7 @@ impl NowPlaying {
         // forward, for players that can do that.
         let details: Element<'_, Message> = if self.can_raise {
             widget::button::custom(details)
+                .name(fl!("a11y-raise"))
                 .padding(0)
                 .width(Length::Fill)
                 .on_press(Message::RaisePlayer)
@@ -996,6 +1004,7 @@ impl NowPlaying {
             };
             let seek_style = move |_: &cosmic::Theme| seek_slider_style(pal);
             let seek_slider = widget::slider(0.0..=1.0, progress, Message::SeekSliderChanged)
+                .name(fl!("a11y-position"))
                 .step(0.001)
                 .on_release(Message::SeekSliderReleased)
                 .class(cosmic::theme::iced::Slider::Custom {
@@ -1025,27 +1034,44 @@ impl NowPlaying {
         } else {
             "media-playback-start-symbolic"
         };
+        let play_pause_name = if self.playback_status == "Playing" {
+            fl!("a11y-pause")
+        } else {
+            fl!("a11y-play")
+        };
         // Shuffle and repeat flank the transport buttons, for players that
         // support them and accept control. Lit when on, dimmed when off.
-        let mode_button = |icon: &'static str, on: bool, message: Message| {
+        // Their accessible names carry the state, which the icon shows only
+        // by color.
+        let mode_button = |icon: &'static str, on: bool, name: String, message: Message| {
             let (fill, ink) = if on {
                 (with_alpha(pal.ink, 0.16), pal.ink)
             } else {
                 (Color::TRANSPARENT, with_alpha(pal.ink, 0.5))
             };
-            round_button(icon, 18, 36.0, fill, ink, message)
+            round_button(icon, 18, 36.0, fill, ink, name, message)
         };
-        let shuffle_button = self
-            .shuffle
-            .filter(|_| self.can_control)
-            .map(|on| mode_button("media-playlist-shuffle-symbolic", on, Message::ToggleShuffle));
+        let shuffle_button = self.shuffle.filter(|_| self.can_control).map(|on| {
+            let state = if on { fl!("a11y-on") } else { fl!("a11y-off") };
+            mode_button(
+                "media-playlist-shuffle-symbolic",
+                on,
+                fl!("a11y-shuffle", state = state),
+                Message::ToggleShuffle,
+            )
+        });
         let repeat_button = self.loop_status.filter(|_| self.can_control).map(|status| {
-            let icon = if status == mpris::LoopStatus::Track {
-                "media-playlist-repeat-song-symbolic"
-            } else {
-                "media-playlist-repeat-symbolic"
+            let (icon, state) = match status {
+                mpris::LoopStatus::None => ("media-playlist-repeat-symbolic", fl!("a11y-off")),
+                mpris::LoopStatus::Playlist => ("media-playlist-repeat-symbolic", fl!("a11y-repeat-all")),
+                mpris::LoopStatus::Track => ("media-playlist-repeat-song-symbolic", fl!("a11y-repeat-one")),
             };
-            mode_button(icon, status != mpris::LoopStatus::None, Message::CycleRepeat)
+            mode_button(
+                icon,
+                status != mpris::LoopStatus::None,
+                fl!("a11y-repeat", state = state),
+                Message::CycleRepeat,
+            )
         });
         let has_modes = shuffle_button.is_some() || repeat_button.is_some();
 
@@ -1060,6 +1086,7 @@ impl NowPlaying {
                 44.0,
                 Color::TRANSPARENT,
                 pal.ink,
+                fl!("a11y-previous"),
                 Message::PlayerCommand(mpris::MprisCommand::Previous),
             ));
         }
@@ -1069,6 +1096,7 @@ impl NowPlaying {
             56.0,
             pal.play,
             pal.on_play,
+            play_pause_name.clone(),
             Message::PlayerCommand(mpris::MprisCommand::PlayPause),
         ));
         if self.can_go_next {
@@ -1078,6 +1106,7 @@ impl NowPlaying {
                 44.0,
                 Color::TRANSPARENT,
                 pal.ink,
+                fl!("a11y-next"),
                 Message::PlayerCommand(mpris::MprisCommand::Next),
             ));
         }
@@ -1107,23 +1136,27 @@ impl NowPlaying {
                 } else {
                     widget::row::with_capacity(2).push(label).push(glyph)
                 };
+                let name = if seconds < 0 {
+                    fl!("a11y-skip-back", seconds = seconds.abs())
+                } else {
+                    fl!("a11y-skip-forward", seconds = seconds)
+                };
                 chip_button(
                     row.spacing(6).align_y(Vertical::Center),
                     chip_fill,
                     pal.ink,
+                    name,
                     Message::SeekBy(seconds),
                 )
             };
             let speed = self.rate_range.filter(|_| self.can_control).map(|_| {
                 let separator = fl!("decimal-separator");
+                let rate = fl!("playback-rate", rate = rate_number(self.rate, &separator));
                 chip_button(
-                    widget::text::body(fl!(
-                        "playback-rate",
-                        rate = rate_number(self.rate, &separator)
-                    ))
-                    .class(cosmic::theme::Text::Color(pal.ink)),
+                    widget::text::body(rate.clone()).class(cosmic::theme::Text::Color(pal.ink)),
                     chip_fill,
                     pal.ink,
+                    fl!("a11y-speed", rate = rate),
                     Message::CycleRate,
                 )
             });
@@ -1911,6 +1944,7 @@ impl cosmic::Application for NowPlaying {
                     .icon_button("audio-x-generic-symbolic")
                     .on_press(Message::TogglePopup)
             };
+            let button = button.name(fl!("app-title")).description(self.display_text.clone());
             return widget::autosize::autosize(button, AUTOSIZE_MAIN_ID.clone()).into();
         }
 
@@ -1977,11 +2011,17 @@ impl cosmic::Application for NowPlaying {
                     widget::button::icon(
                         widget::icon::from_name("media-skip-backward-symbolic").size(16),
                     )
+                    .name(fl!("a11y-previous"))
                     .on_press(Message::PlayerCommand(mpris::MprisCommand::Previous)),
                 );
             }
             controls = controls.push(
                 widget::button::icon(widget::icon::from_name(play_pause_icon).size(16))
+                    .name(if self.playback_status == "Playing" {
+                        fl!("a11y-pause")
+                    } else {
+                        fl!("a11y-play")
+                    })
                     .on_press(Message::PlayerCommand(mpris::MprisCommand::PlayPause)),
             );
             if show_skips && want_next {
@@ -1989,6 +2029,7 @@ impl cosmic::Application for NowPlaying {
                     widget::button::icon(
                         widget::icon::from_name("media-skip-forward-symbolic").size(16),
                     )
+                    .name(fl!("a11y-next"))
                     .on_press(Message::PlayerCommand(mpris::MprisCommand::Next)),
                 );
             }
@@ -1999,6 +2040,7 @@ impl cosmic::Application for NowPlaying {
                     widget::button::icon(
                         widget::icon::from_name("media-playback-stop-symbolic").size(16),
                     )
+                    .name(fl!("a11y-stop"))
                     .on_press(Message::StopPlayback),
                 );
             }
@@ -2092,6 +2134,8 @@ impl cosmic::Application for NowPlaying {
         // and don't also toggle the popup. Hover is detected via a raw-event
         // subscription (see `subscription`), so no mouse_area wrapper is needed.
         let button = widget::button::custom(content)
+            .name(fl!("app-title"))
+            .description(self.display_text.clone())
             .width(Length::Fixed(widget_width))
             .height(Length::Fixed(panel_height))
             .padding(0)

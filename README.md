@@ -111,6 +111,7 @@ The **settings view**, reached via the gear icon, keeps every option on one comp
 | 👻 **Invisible when idle** | Takes up zero panel space when nothing is playing |
 | 📐 **Vertical panels** | On a left/right panel the applet collapses to a square art/icon button that opens the popup |
 | 📦 **Sandbox-aware art** | Works across Flatpak, Snap, and native packages |
+| ♿ **Accessible names** | Every icon-only button and every slider carries a translated accessible name; shuffle and repeat include their current state, and the panel button describes the playing track |
 | 🦀 **Pure Rust + i18n** | `zbus` for native D-Bus; Fluent-based localization |
 
 ### Supported Media Players
